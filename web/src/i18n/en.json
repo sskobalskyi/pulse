@@ -12,7 +12,8 @@
   "devices": {
     "title": "Devices",
     "empty": "No readings yet. Start the simulator to see data.",
-    "filter": "Filter devices"
+    "filter": "Filter devices",
+    "silent": "no data"
   },
   "chart": {
     "title": "{{device}} · {{metric}}",

@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Confluent.Kafka;
+using Microsoft.Extensions.Options;
 using Pulse.Api.Observability;
+using Pulse.Api.Processing;
 using Pulse.Api.Storage;
 using Pulse.Core;
 
@@ -16,7 +18,8 @@ public static class TelemetryEndpoints
         var api = app.MapGroup("/api");
 
         api.MapPost("/telemetry", IngestAsync);
-        api.MapGet("/devices", async (PulseDb db, CancellationToken ct) => Results.Ok(await db.GetDevicesAsync(ct)));
+        api.MapGet("/devices", async (PulseDb db, IOptions<SilenceOptions> silence, CancellationToken ct) =>
+            Results.Ok(await db.GetDevicesAsync(silence.Value.Timeout, ct)));
         api.MapGet("/devices/{deviceId}/series", async (string deviceId, string metric, int? minutes, PulseDb db, CancellationToken ct) =>
             Results.Ok(await db.GetSeriesAsync(deviceId, metric, TimeSpan.FromMinutes(Math.Clamp(minutes ?? 10, 1, 24 * 60)), ct)));
         api.MapGet("/alerts", async (int? limit, PulseDb db, CancellationToken ct) =>

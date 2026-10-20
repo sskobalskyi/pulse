@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr'
-import { API_URL, fetchAlerts, fetchDevices } from './api'
+import { API_URL, fetchAlerts } from './api'
 import { seriesKey, type Alert, type ConnectionStatus, type Reading } from './types'
 
 const BUFFER_SIZE = 300
@@ -84,13 +84,10 @@ export function useLive(): LiveSnapshot {
         return
       }
 
-      // Seed with what the backend already has so the page isn't empty before the next batch arrives.
-      const [devices, recent] = await Promise.all([fetchDevices().catch(() => []), fetchAlerts().catch(() => [])])
+      // Seed the alert feed with what the backend already has so it isn't empty until the next alert.
+      // The device list is not seeded here: the page polls it, because it also needs the silent flag.
+      const recent = await fetchAlerts().catch(() => [])
       if (disposed) return
-      for (const reading of devices) {
-        const key = seriesKey(reading.deviceId, reading.metric)
-        if (!latest.current.has(key)) latest.current.set(key, reading)
-      }
       if (alerts.current.length === 0) alerts.current = recent
       dirty.current = true
     }

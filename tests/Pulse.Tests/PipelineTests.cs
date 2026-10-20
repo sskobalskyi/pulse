@@ -168,6 +168,13 @@ public sealed class PipelineTests(PipelineFixture stack)
             // The device that kept reporting never went silent.
             Assert.Empty(await AlertsFor(other, AlertKind.NoData));
 
+            // The device list still shows the silent one, flagged, with its last known value.
+            var listed = (await stack.Client.GetFromJsonAsync<DeviceSummary[]>("/api/devices"))!;
+            var silentDevice = Assert.Single(listed, d => d.DeviceId == device);
+            Assert.True(silentDevice.Silent);
+            Assert.Equal(20, silentDevice.Value);
+            Assert.False(Assert.Single(listed, d => d.DeviceId == other).Silent);
+
             // The device comes back.
             await PostAccepted(Reading(device, "temperature", 21, DateTimeOffset.UtcNow));
             var resolved = await Eventually(
