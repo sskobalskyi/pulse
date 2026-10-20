@@ -65,6 +65,7 @@ The schema script only runs on an empty database volume. After pulling schema ch
 ```bash
 dotnet test                                    # unit, database and pipeline tests (the last two need Docker)
 cd web && npx playwright install chromium     # once
+cd web && npm test                               # frontend unit tests (live state handling)
 cd web && npx playwright test                  # E2E, needs the stack running (PULSE_WEB_URL overrides the URL)
 docker compose --profile loadtest run --rm k6  # load smoke test, needs the stack running
 ```

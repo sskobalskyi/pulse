@@ -1,16 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr'
 import { API_URL, fetchAlerts } from './api'
+import { appendPoint, isNewer, mergeAlerts, type LivePoint } from './liveState'
 import { seriesKey, type Alert, type ConnectionStatus, type Reading } from './types'
 
 const BUFFER_SIZE = 300
 const MAX_ALERTS = 50
 const RENDER_INTERVAL_MS = 250
-
-export interface LivePoint {
-  t: number
-  v: number
-}
 
 export interface LiveSnapshot {
   status: ConnectionStatus
@@ -55,18 +51,17 @@ export function useLive(): LiveSnapshot {
     connection.on('readings', (batch: Reading[]) => {
       for (const reading of batch) {
         const key = seriesKey(reading.deviceId, reading.metric)
-        latest.current.set(key, reading)
+        if (isNewer(reading, latest.current.get(key))) latest.current.set(key, reading)
 
         const buffer = buffers.current.get(key) ?? []
-        buffer.push({ t: Date.parse(reading.timestamp) / 1000, v: reading.value })
-        if (buffer.length > BUFFER_SIZE) buffer.shift()
+        appendPoint(buffer, { t: Date.parse(reading.timestamp) / 1000, v: reading.value }, BUFFER_SIZE)
         buffers.current.set(key, buffer)
       }
       dirty.current = true
     })
 
     connection.on('alerts', (batch: Alert[]) => {
-      alerts.current = [...batch.slice().reverse(), ...alerts.current].slice(0, MAX_ALERTS)
+      alerts.current = mergeAlerts(alerts.current, batch, MAX_ALERTS)
       dirty.current = true
     })
 
