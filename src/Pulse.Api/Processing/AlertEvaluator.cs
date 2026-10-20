@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using Pulse.Api.Hubs;
 using Pulse.Api.Messaging;
+using Pulse.Api.Observability;
 using Pulse.Api.Storage;
 using Pulse.Core;
 
@@ -37,6 +38,13 @@ public sealed class AlertEvaluator(
         {
             await db.InsertAlertsAsync(result.Alerts, ct);
             await hub.Clients.All.SendAsync(LiveHub.AlertsEvent, result.Alerts, ct);
+
+            foreach (var alert in result.Alerts)
+            {
+                PulseTelemetry.AlertsEmitted.Add(1,
+                    new KeyValuePair<string, object?>("state", alert.State.ToString()),
+                    new KeyValuePair<string, object?>("metric", alert.Metric));
+            }
         }
 
         // Not reached when storing fails: the batch is redelivered and evaluated from the same state.

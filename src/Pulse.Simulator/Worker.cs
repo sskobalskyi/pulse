@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Net.Http.Json;
 using Microsoft.Extensions.Options;
 using Pulse.Core;
@@ -21,6 +23,13 @@ public sealed class SimulatorOptions
 /// <summary>Emits a random-walk reading per device and metric every interval, as one batch per tick.</summary>
 public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOptions> options, ILogger<Worker> logger) : BackgroundService
 {
+    public const string TelemetryName = "Pulse.Simulator";
+
+    private static readonly ActivitySource Source = new(TelemetryName);
+    private static readonly Meter Meter = new(TelemetryName);
+    private static readonly Counter<long> ReadingsSent = Meter.CreateCounter<long>("pulse.simulator.readings.sent", "{reading}");
+    private static readonly Counter<long> SendFailures = Meter.CreateCounter<long>("pulse.simulator.send.failures", "{batch}");
+
     private static readonly (string Metric, double Start, double Step, double Spike)[] Metrics =
     [
         ("temperature", 22, 0.3, 120),
@@ -64,13 +73,20 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
                 batch.Add(new TelemetryReading(key.Item1, key.Item2, Math.Round(value, 2), now));
             }
 
+            // One span per tick: the HTTP call below becomes its child and carries the trace into the API.
+            using var activity = Source.StartActivity("simulator tick");
+            activity?.SetTag("pulse.readings", batch.Count);
+
             try
             {
                 using var response = await http.PostAsJsonAsync($"{o.ApiUrl}/api/telemetry", batch, stoppingToken);
                 response.EnsureSuccessStatusCode();
+                ReadingsSent.Add(batch.Count);
             }
             catch (Exception ex) when (ex is HttpRequestException)
             {
+                SendFailures.Add(1);
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 logger.LogWarning("Ingestion API unavailable: {Message}", ex.Message);
             }
         }

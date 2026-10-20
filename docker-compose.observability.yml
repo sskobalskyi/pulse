@@ -1,0 +1,27 @@
+# Adds the .NET Aspire Dashboard (an OTLP viewer for traces, metrics and logs) and points the apps at it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build
+#
+# Dashboard: http://localhost:18888 (no login, local use only).
+# It keeps telemetry in memory only, so it is empty again after a restart.
+
+services:
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.0
+    environment:
+      DASHBOARD__FRONTEND__AUTHMODE: Unsecured
+      DASHBOARD__OTLP__AUTHMODE: Unsecured
+    ports:
+      - "18888:18888"
+
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://aspire-dashboard:18889
+    depends_on:
+      - aspire-dashboard
+
+  simulator:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://aspire-dashboard:18889
+    depends_on:
+      - aspire-dashboard

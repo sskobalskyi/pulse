@@ -7,6 +7,7 @@ using OpenTelemetry.Trace;
 using Pulse.Api.Endpoints;
 using Pulse.Api.Hubs;
 using Pulse.Api.Messaging;
+using Pulse.Api.Observability;
 using Pulse.Api.Processing;
 using Pulse.Api.Storage;
 
@@ -43,10 +44,23 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithOrigins(builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? ["http://localhost:5173"])
     .AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
+builder.Logging.AddOpenTelemetry(o =>
+{
+    o.IncludeFormattedMessage = true;
+    o.IncludeScopes = true;
+});
+
 var otel = builder.Services.AddOpenTelemetry()
     .ConfigureResource(r => r.AddService("pulse-api"))
-    .WithTracing(t => t.AddAspNetCoreInstrumentation())
-    .WithMetrics(m => m.AddAspNetCoreInstrumentation().AddRuntimeInstrumentation());
+    .WithTracing(t => t
+        .AddSource(PulseTelemetry.Name)
+        .AddAspNetCoreInstrumentation(o => o.Filter = ctx => ctx.Request.Path != "/health")
+        .AddNpgsql())
+    .WithMetrics(m => m
+        .AddMeter(PulseTelemetry.Name, "Microsoft.AspNetCore.Hosting", "Microsoft.AspNetCore.Server.Kestrel", "Microsoft.AspNetCore.Http.Connections")
+        .AddAspNetCoreInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddNpgsqlInstrumentation());
 
 // Export over OTLP only when an endpoint is configured, so a bare `dotnet run` stays quiet.
 if (!string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))

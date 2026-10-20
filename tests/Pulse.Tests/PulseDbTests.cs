@@ -10,8 +10,7 @@ public sealed class PulseDbTests : IAsyncLifetime
 {
     private static readonly DateTimeOffset T0 = new(2026, 10, 20, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("timescale/timescaledb:2.17.2-pg16")
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("timescale/timescaledb:2.17.2-pg16")
         .WithDatabase("pulse")
         .WithUsername("pulse")
         .WithPassword("pulse")
