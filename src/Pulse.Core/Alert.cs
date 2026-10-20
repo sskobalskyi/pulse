@@ -5,11 +5,21 @@ namespace Pulse.Core;
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum AlertState
 {
-    /// <summary>The metric left its allowed range.</summary>
+    /// <summary>The condition started: a metric left its range, or a device went silent.</summary>
     Raised,
 
-    /// <summary>The metric came back inside the range, past the hysteresis margin.</summary>
+    /// <summary>The condition ended: the metric came back past the hysteresis margin, or data resumed.</summary>
     Resolved,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum AlertKind
+{
+    /// <summary>A metric left its allowed range. <see cref="Alert.Value"/> is the reading.</summary>
+    Threshold,
+
+    /// <summary>A device stopped reporting a metric. <see cref="Alert.Value"/> is how many seconds it has been silent.</summary>
+    NoData,
 }
 
 public sealed record Alert(
@@ -18,4 +28,5 @@ public sealed record Alert(
     string Rule,
     double Value,
     DateTimeOffset Timestamp,
-    AlertState State = AlertState.Raised);
+    AlertState State = AlertState.Raised,
+    AlertKind Kind = AlertKind.Threshold);

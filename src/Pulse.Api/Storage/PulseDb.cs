@@ -37,16 +37,16 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(
             """
-            INSERT INTO alerts (device_id, metric, rule, value, ts, state)
-            VALUES (@DeviceId, @Metric, @Rule, @Value, @Timestamp, @State)
+            INSERT INTO alerts (device_id, metric, rule, value, ts, state, kind)
+            VALUES (@DeviceId, @Metric, @Rule, @Value, @Timestamp, @State, @Kind)
             ON CONFLICT (device_id, metric, rule, ts, state) DO NOTHING
             """,
-            alerts.Select(a => new { a.DeviceId, a.Metric, a.Rule, a.Value, a.Timestamp, State = a.State.ToString() }),
+            alerts.Select(a => new { a.DeviceId, a.Metric, a.Rule, a.Value, a.Timestamp, State = a.State.ToString(), Kind = a.Kind.ToString() }),
             cancellationToken: ct));
     }
 
-    /// <summary>The (device, metric, rule) combinations whose most recent alert is still Raised.</summary>
-    public async Task<IReadOnlyList<AlertKey>> GetActiveAlertKeysAsync(CancellationToken ct)
+    /// <summary>The (device, metric, rule) combinations of one kind whose most recent alert is still Raised.</summary>
+    public async Task<IReadOnlyList<AlertKey>> GetActiveAlertKeysAsync(AlertKind kind, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<AlertKeyRow>(new CommandDefinition("""
@@ -54,11 +54,41 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
             FROM (
                 SELECT DISTINCT ON (device_id, metric, rule) device_id, metric, rule, state
                 FROM alerts
+                WHERE kind = @kind
                 ORDER BY device_id, metric, rule, ts DESC
             ) latest
             WHERE state = 'Raised'
-            """, cancellationToken: ct));
+            """, new { kind = kind.ToString() }, cancellationToken: ct));
         return rows.Select(r => new AlertKey(r.DeviceId, r.Metric, r.Rule)).ToList();
+    }
+
+    /// <summary>Records that these series just reported. The time is the database clock at receipt, not the device's.</summary>
+    public async Task TouchLastSeenAsync(IReadOnlyList<TelemetryReading> readings, CancellationToken ct)
+    {
+        var series = readings.Select(r => (r.DeviceId, r.Metric)).Distinct().ToArray();
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            INSERT INTO device_last_seen (device_id, metric, last_seen_at)
+            SELECT device_id, metric, now() FROM unnest(@deviceIds, @metrics) AS s(device_id, metric)
+            ON CONFLICT (device_id, metric) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
+            """, conn);
+
+        cmd.Parameters.Add(new NpgsqlParameter<string[]>("deviceIds", series.Select(s => s.DeviceId).ToArray()));
+        cmd.Parameters.Add(new NpgsqlParameter<string[]>("metrics", series.Select(s => s.Metric).ToArray()));
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Series whose last reading arrived longer ago than <paramref name="timeout"/>.</summary>
+    public async Task<IReadOnlyList<SilentSeries>> GetSilentSeriesAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<SilentRow>(new CommandDefinition("""
+            SELECT device_id AS DeviceId, metric AS Metric, extract(epoch FROM now() - last_seen_at) AS SilentSeconds
+            FROM device_last_seen
+            WHERE last_seen_at < now() - @timeout
+            """, new { timeout }, cancellationToken: ct));
+        return rows.Select(r => new SilentSeries(r.DeviceId, r.Metric, TimeSpan.FromSeconds(r.SilentSeconds))).ToList();
     }
 
     public async Task<IReadOnlyList<DeviceSummary>> GetDevicesAsync(CancellationToken ct)
@@ -99,10 +129,11 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<AlertRow>(new CommandDefinition("""
-            SELECT device_id AS DeviceId, metric AS Metric, rule AS Rule, value AS Value, ts AS Timestamp, state AS State
+            SELECT device_id AS DeviceId, metric AS Metric, rule AS Rule, value AS Value, ts AS Timestamp, state AS State, kind AS Kind
             FROM alerts ORDER BY ts DESC LIMIT @limit
             """, new { limit }, cancellationToken: ct));
-        return rows.Select(r => new Alert(r.DeviceId, r.Metric, r.Rule, r.Value, r.Timestamp, Enum.Parse<AlertState>(r.State))).ToList();
+        return rows.Select(r => new Alert(
+            r.DeviceId, r.Metric, r.Rule, r.Value, r.Timestamp, Enum.Parse<AlertState>(r.State), Enum.Parse<AlertKind>(r.Kind))).ToList();
     }
 
     // Dapper binds these by property name; the public contracts stay immutable records.
@@ -114,6 +145,14 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         public double Value { get; set; }
         public DateTimeOffset Timestamp { get; set; }
         public string State { get; set; } = "";
+        public string Kind { get; set; } = "";
+    }
+
+    private sealed class SilentRow
+    {
+        public string DeviceId { get; set; } = "";
+        public string Metric { get; set; } = "";
+        public double SilentSeconds { get; set; }
     }
 
     private sealed class AlertKeyRow

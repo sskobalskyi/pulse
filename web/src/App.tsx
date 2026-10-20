@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LiveChart } from './components/LiveChart'
 import { LOCALES } from './i18n'
-import { seriesKey, type Reading } from './types'
+import { seriesKey, type Alert, type Reading } from './types'
 import { useLive } from './useLive'
 import './App.css'
 
@@ -23,6 +23,12 @@ export default function App() {
 
   const metricLabel = (metric: string) => t(`metrics.${metric}`, { defaultValue: metric })
   const language = LOCALES.find((l) => i18n.resolvedLanguage === l) ?? 'en'
+
+  // A threshold alert carries the reading; a no-data alert carries how long the device was silent.
+  const alertDetail = (a: Alert) => {
+    if (a.kind === 'Threshold') return t('alerts.value', { value: a.value })
+    return a.state === 'Raised' ? t('alerts.noData.silent', { seconds: Math.round(a.value) }) : t('alerts.noData.resumed')
+  }
 
   return (
     <div className="app">
@@ -117,7 +123,7 @@ export default function App() {
                   <strong>{a.deviceId}</strong> · {metricLabel(a.metric)}{' '}
                   <span className={`badge badge-${a.state.toLowerCase()}`}>{t(`alerts.state.${a.state}`)}</span>
                   <div className="muted">
-                    {t('alerts.value', { value: a.value })} · {new Date(a.timestamp).toLocaleTimeString(i18n.language)}
+                    {alertDetail(a)} ·{new Date(a.timestamp).toLocaleTimeString(i18n.language)}
                   </div>
                 </li>
               ))}

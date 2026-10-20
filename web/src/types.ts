@@ -10,6 +10,7 @@ export interface Alert {
   metric: string
   rule: string
   state: 'Raised' | 'Resolved'
+  kind: 'Threshold' | 'NoData'
   value: number
   timestamp: string
 }

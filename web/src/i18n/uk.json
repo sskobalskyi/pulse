@@ -27,6 +27,10 @@
     "state": {
       "Raised": "Спрацювало",
       "Resolved": "Знято"
+    },
+    "noData": {
+      "silent": "немає даних {{seconds}} с",
+      "resumed": "дані відновились"
     }
   },
   "metrics": {

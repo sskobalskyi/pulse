@@ -15,6 +15,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<KafkaOptions>(builder.Configuration.GetSection("Kafka"));
 builder.Services.Configure<AlertRulesOptions>(builder.Configuration.GetSection("Alerts"));
+builder.Services.Configure<SilenceOptions>(builder.Configuration.GetSection("Alerts:NoData"));
 
 builder.Services.AddSingleton(NpgsqlDataSource.Create(
     builder.Configuration.GetConnectionString("Timescale") ?? throw new InvalidOperationException("Missing ConnectionStrings:Timescale")));
@@ -36,6 +37,7 @@ builder.Services.AddHostedService<KafkaTopicInitializer>();
 builder.Services.AddHostedService<TimescaleWriter>();
 builder.Services.AddHostedService<LivePublisher>();
 builder.Services.AddHostedService<AlertEvaluator>();
+builder.Services.AddHostedService<SilenceMonitor>();
 
 builder.Services.AddSignalR();
 builder.Services.AddProblemDetails();
