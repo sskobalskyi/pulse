@@ -1,0 +1,47 @@
+namespace Pulse.Core;
+
+/// <summary>A (device, metric) pair that has not reported for longer than the timeout.</summary>
+public sealed record SilentSeries(string DeviceId, string Metric, TimeSpan SilentFor);
+
+/// <summary>
+/// Turns "which series are silent right now" into alert state changes: <see cref="AlertState.Raised"/> when a
+/// series falls silent, <see cref="AlertState.Resolved"/> when it is no longer in the silent set.
+/// Like <see cref="AlertTracker"/>, evaluation only takes effect on <see cref="AlertBatch.Commit"/>,
+/// so a batch that failed to persist is evaluated again from the same state.
+/// Not thread-safe; use one instance per monitor.
+/// </summary>
+public sealed class SilenceTracker(TimeSpan timeout)
+{
+    private HashSet<AlertKey> _active = [];
+
+    public string RuleName => $"no data for {timeout.TotalSeconds:0}s";
+
+    /// <summary>Replaces the state, e.g. with the no-data alerts still raised according to storage after a restart.</summary>
+    public void Restore(IEnumerable<AlertKey> active) => _active = [.. active];
+
+    public AlertBatch Evaluate(IReadOnlyCollection<SilentSeries> silent, DateTimeOffset now)
+    {
+        var next = new HashSet<AlertKey>(_active);
+        var alerts = new List<Alert>();
+        var silentKeys = new HashSet<AlertKey>();
+
+        foreach (var series in silent)
+        {
+            var key = new AlertKey(series.DeviceId, series.Metric, RuleName);
+            silentKeys.Add(key);
+
+            if (next.Add(key))
+                alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, Math.Round(series.SilentFor.TotalSeconds, 1), now, AlertState.Raised, AlertKind.NoData));
+        }
+
+        // Anything that was silent and no longer is has started reporting again. This also cleans up alerts
+        // raised under an older timeout, whose rule name differs from the current one.
+        foreach (var key in _active.Where(k => !silentKeys.Contains(k)))
+        {
+            next.Remove(key);
+            alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, 0, now, AlertState.Resolved, AlertKind.NoData));
+        }
+
+        return new AlertBatch(alerts, () => _active = next);
+    }
+}

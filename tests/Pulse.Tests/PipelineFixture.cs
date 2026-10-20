@@ -20,7 +20,11 @@ public sealed class PipelineCollection : ICollectionFixture<PipelineFixture>
 /// </summary>
 public sealed class PipelineFixture : IAsyncLifetime
 {
-    private static readonly string[] EnvKeys = ["ConnectionStrings__Timescale", "Kafka__BootstrapServers", "Kafka__AutoOffsetReset"];
+    private static readonly string[] EnvKeys =
+    [
+        "ConnectionStrings__Timescale", "Kafka__BootstrapServers", "Kafka__AutoOffsetReset",
+        "Alerts__NoData__Timeout", "Alerts__NoData__CheckInterval",
+    ];
 
     private readonly RedpandaContainer _redpanda = new RedpandaBuilder("docker.redpanda.com/redpandadata/redpanda:v24.3.7").Build();
 
@@ -47,6 +51,10 @@ public sealed class PipelineFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("Kafka__BootstrapServers", _redpanda.GetBootstrapAddress());
         // A consumer group that has not joined yet must still see messages sent right before it did.
         Environment.SetEnvironmentVariable("Kafka__AutoOffsetReset", "Earliest");
+        // Short enough to watch a device go silent within a test. Tests that are not about silence only look
+        // at threshold alerts, because every test device falls silent a few seconds after its last reading.
+        Environment.SetEnvironmentVariable("Alerts__NoData__Timeout", "00:00:03");
+        Environment.SetEnvironmentVariable("Alerts__NoData__CheckInterval", "00:00:00.500");
 
         _factory = new WebApplicationFactory<Program>();
         Client = _factory.CreateClient(); // also starts the host, and with it the stream processors

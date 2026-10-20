@@ -42,10 +42,23 @@ CREATE TABLE alerts (
     value     double precision NOT NULL,
     ts        timestamptz      NOT NULL,
     -- 'Raised' when the rule was breached, 'Resolved' when it cleared past the hysteresis margin.
-    state     text             NOT NULL CHECK (state IN ('Raised', 'Resolved'))
+    state     text             NOT NULL CHECK (state IN ('Raised', 'Resolved')),
+    -- 'Threshold': value is the reading. 'NoData': value is how many seconds the series has been silent.
+    kind      text             NOT NULL DEFAULT 'Threshold' CHECK (kind IN ('Threshold', 'NoData'))
 );
 CREATE INDEX ix_alerts_ts ON alerts (ts DESC);
 -- The same state change reprocessed after a redelivery must not create a second row.
 CREATE UNIQUE INDEX ux_alerts_identity ON alerts (device_id, metric, rule, ts, state);
 -- Finds the latest state of every (device, metric, rule) when the evaluator restarts.
 CREATE INDEX ix_alerts_key_ts ON alerts (device_id, metric, rule, ts DESC);
+
+-- When each series last reported, by server receive time rather than device time, so a device with a wrong
+-- clock cannot hide its silence. One row per (device, metric), upserted by the writer for every batch.
+-- Kept in the database, not in memory, so it stays correct when partitions move between API instances.
+CREATE TABLE device_last_seen (
+    device_id    text        NOT NULL,
+    metric       text        NOT NULL,
+    last_seen_at timestamptz NOT NULL,
+    PRIMARY KEY (device_id, metric)
+);
+CREATE INDEX ix_device_last_seen_at ON device_last_seen (last_seen_at);

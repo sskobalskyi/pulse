@@ -83,7 +83,7 @@ public sealed class PipelineTests(PipelineFixture stack)
         {
             lock (pushed)
             {
-                pushed.AddRange(batch.Where(a => a.DeviceId == device));
+                pushed.AddRange(batch.Where(a => a.DeviceId == device && a.Kind == AlertKind.Threshold));
                 if (pushed.Any(a => a.State == AlertState.Resolved)) resolvedPushed.TrySetResult();
             }
         });
@@ -95,7 +95,7 @@ public sealed class PipelineTests(PipelineFixture stack)
         await PostAccepted(Reading(device, "temperature", 50, now.AddSeconds(-1)));
 
         var alerts = await Eventually(
-            async () => (await stack.Client.GetFromJsonAsync<Alert[]>("/api/alerts?limit=500"))!.Where(a => a.DeviceId == device).ToArray(),
+            async () => await AlertsFor(device, AlertKind.Threshold),
             found => found.Any(a => a.State == AlertState.Resolved));
 
         // Newest first: one Resolved on the value that came back, one Raised on the first breach, nothing for the second.
@@ -124,9 +124,68 @@ public sealed class PipelineTests(PipelineFixture stack)
             async () => (await stack.Client.GetFromJsonAsync<Alert[]>("/api/alerts?limit=500"))!.Any(a => a.DeviceId == marker),
             seen => seen);
 
-        var alerts = (await stack.Client.GetFromJsonAsync<Alert[]>("/api/alerts?limit=500"))!.Where(a => a.DeviceId == device).ToArray();
+        var alerts = await AlertsFor(device, AlertKind.Threshold);
         Assert.Equal([AlertState.Raised], alerts.Select(a => a.State));
     }
+
+    [Fact]
+    public async Task A_device_that_stops_reporting_raises_no_data_and_resolves_when_it_returns()
+    {
+        var device = NewDevice();
+        var other = NewDevice();
+
+        var pushed = new TaskCompletionSource<Alert>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var hub = stack.CreateHubConnection();
+        hub.On<Alert[]>("alerts", batch =>
+        {
+            var mine = batch.FirstOrDefault(a => a.DeviceId == device && a.Kind == AlertKind.NoData);
+            if (mine is not null) pushed.TrySetResult(mine);
+        });
+        await hub.StartAsync();
+
+        // Both devices report once, then only `other` keeps going. The timeout in these tests is 3 seconds.
+        await PostAccepted(Reading(device, "temperature", 20, DateTimeOffset.UtcNow), Reading(other, "temperature", 20, DateTimeOffset.UtcNow));
+        using var keepAlive = new CancellationTokenSource();
+        var heartbeat = Task.Run(async () =>
+        {
+            while (!keepAlive.IsCancellationRequested)
+            {
+                await PostAccepted(Reading(other, "temperature", 20, DateTimeOffset.UtcNow));
+                await Task.Delay(500);
+            }
+        });
+
+        try
+        {
+            var raised = await Eventually(
+                async () => await AlertsFor(device, AlertKind.NoData),
+                found => found.Any(a => a.State == AlertState.Raised));
+            Assert.Equal([AlertState.Raised], raised.Select(a => a.State));
+            Assert.InRange(raised[0].Value, 3, 15); // seconds of silence when it was noticed
+            Assert.Equal("no data for 3s", raised[0].Rule);
+            Assert.Equal(AlertState.Raised, (await pushed.Task.WaitAsync(Timeout)).State);
+
+            // The device that kept reporting never went silent.
+            Assert.Empty(await AlertsFor(other, AlertKind.NoData));
+
+            // The device comes back.
+            await PostAccepted(Reading(device, "temperature", 21, DateTimeOffset.UtcNow));
+            var resolved = await Eventually(
+                async () => await AlertsFor(device, AlertKind.NoData),
+                found => found.Any(a => a.State == AlertState.Resolved));
+            Assert.Equal([AlertState.Resolved, AlertState.Raised], resolved.Select(a => a.State));
+        }
+        finally
+        {
+            await keepAlive.CancelAsync();
+            await heartbeat;
+        }
+    }
+
+    private async Task<Alert[]> AlertsFor(string device, AlertKind kind) =>
+        (await stack.Client.GetFromJsonAsync<Alert[]>("/api/alerts?limit=500"))!
+        .Where(a => a.DeviceId == device && a.Kind == kind)
+        .ToArray();
 
     [Fact]
     public async Task Invalid_batches_are_rejected_before_reaching_kafka()

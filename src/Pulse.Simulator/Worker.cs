@@ -18,6 +18,13 @@ public sealed class SimulatorOptions
     public int AnomalyMinTicks { get; set; } = 5;
 
     public int AnomalyMaxTicks { get; set; } = 15;
+
+    /// <summary>Probability per reading that a sensor goes quiet. The default dropout outlasts the API's 60 second no-data timeout.</summary>
+    public double DropoutChance { get; set; } = 0.0002;
+
+    public int DropoutMinTicks { get; set; } = 90;
+
+    public int DropoutMaxTicks { get; set; } = 150;
 }
 
 /// <summary>Emits a random-walk reading per device and metric every interval, as one batch per tick.</summary>
@@ -47,6 +54,7 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
             .ToDictionary(x => x.Key, x => x.Value);
 
         var faultTicksLeft = new Dictionary<(string, string), int>();
+        var dropoutTicksLeft = new Dictionary<(string, string), int>();
 
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(o.IntervalMs));
         logger.LogInformation("Simulating {Devices} devices every {Interval} ms against {Url}", o.Devices, o.IntervalMs, o.ApiUrl);
@@ -70,8 +78,19 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
 
                 var value = left > 0 ? spec.Spike : next;
                 faultTicksLeft[key] = Math.Max(left - 1, 0);
+
+                // A dropout is a sensor that goes quiet: it sends nothing for a while, then comes back.
+                dropoutTicksLeft.TryGetValue(key, out var quiet);
+                if (quiet == 0 && rng.NextDouble() < o.DropoutChance)
+                    quiet = rng.Next(o.DropoutMinTicks, o.DropoutMaxTicks + 1);
+
+                dropoutTicksLeft[key] = Math.Max(quiet - 1, 0);
+                if (quiet > 0) continue;
+
                 batch.Add(new TelemetryReading(key.Item1, key.Item2, Math.Round(value, 2), now));
             }
+
+            if (batch.Count == 0) continue; // every sensor happens to be quiet; the API rejects empty batches
 
             // One span per tick: the HTTP call below becomes its child and carries the trace into the API.
             using var activity = Source.StartActivity("simulator tick");

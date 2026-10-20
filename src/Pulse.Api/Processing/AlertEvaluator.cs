@@ -29,7 +29,7 @@ public sealed class AlertEvaluator(
     {
         if (!_restored)
         {
-            _tracker.Restore(await db.GetActiveAlertKeysAsync(ct));
+            _tracker.Restore(await db.GetActiveAlertKeysAsync(AlertKind.Threshold, ct));
             _restored = true;
         }
 
