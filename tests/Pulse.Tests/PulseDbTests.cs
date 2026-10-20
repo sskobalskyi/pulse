@@ -191,6 +191,29 @@ public sealed class PulseDbTests : IAsyncLifetime
         Assert.Empty(await _db.GetSilentSeriesAsync(TimeSpan.FromSeconds(30), default));
     }
 
+    [Fact]
+    public async Task Only_one_caller_at_a_time_can_hold_an_exclusive_lock()
+    {
+        var innerRan = true;
+        var outerRan = await _db.TryRunExclusiveAsync(42, async () =>
+        {
+            innerRan = await _db.TryRunExclusiveAsync(42, () => Task.CompletedTask, default);
+            Assert.True(await _db.TryRunExclusiveAsync(43, () => Task.CompletedTask, default)); // another key is independent
+        }, default);
+
+        Assert.True(outerRan);
+        Assert.False(innerRan);
+    }
+
+    [Fact]
+    public async Task The_exclusive_lock_is_released_after_the_work_even_when_it_throws()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _db.TryRunExclusiveAsync(42, () => throw new InvalidOperationException("boom"), default));
+
+        Assert.True(await _db.TryRunExclusiveAsync(42, () => Task.CompletedTask, default));
+    }
+
     private async Task<long> Count(string table)
     {
         await using var conn = await _dataSource.OpenConnectionAsync();
