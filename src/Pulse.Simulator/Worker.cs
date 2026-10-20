@@ -10,8 +10,12 @@ public sealed class SimulatorOptions
     public int Devices { get; set; } = 20;
     public int IntervalMs { get; set; } = 1000;
 
-    /// <summary>Probability per reading of an out-of-range spike, to exercise the alert rules.</summary>
-    public double AnomalyChance { get; set; } = 0.01;
+    /// <summary>Probability per reading that a device starts a fault: a run of out-of-range readings, to exercise the alert rules.</summary>
+    public double AnomalyChance { get; set; } = 0.002;
+
+    public int AnomalyMinTicks { get; set; } = 5;
+
+    public int AnomalyMaxTicks { get; set; } = 15;
 }
 
 /// <summary>Emits a random-walk reading per device and metric every interval, as one batch per tick.</summary>
@@ -33,6 +37,8 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
             .SelectMany(d => Metrics.Select(m => (Key: ($"device-{d:000}", m.Metric), Value: m.Start + rng.NextDouble() * 4 - 2)))
             .ToDictionary(x => x.Key, x => x.Value);
 
+        var faultTicksLeft = new Dictionary<(string, string), int>();
+
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(o.IntervalMs));
         logger.LogInformation("Simulating {Devices} devices every {Interval} ms against {Url}", o.Devices, o.IntervalMs, o.ApiUrl);
 
@@ -48,7 +54,13 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
                 if (key.Item2 == "battery") next = Math.Min(next, 100);
                 state[key] = next;
 
-                var value = rng.NextDouble() < o.AnomalyChance ? spec.Spike : next;
+                // A fault lasts several ticks, then the metric drops back to its normal random walk.
+                faultTicksLeft.TryGetValue(key, out var left);
+                if (left == 0 && rng.NextDouble() < o.AnomalyChance)
+                    left = rng.Next(o.AnomalyMinTicks, o.AnomalyMaxTicks + 1);
+
+                var value = left > 0 ? spec.Spike : next;
+                faultTicksLeft[key] = Math.Max(left - 1, 0);
                 batch.Add(new TelemetryReading(key.Item1, key.Item2, Math.Round(value, 2), now));
             }
 

@@ -23,7 +23,11 @@
   "alerts": {
     "title": "Сповіщення",
     "empty": "Сповіщень немає. Усе в межах норми.",
-    "value": "значення {{value}}"
+    "value": "значення {{value}}",
+    "state": {
+      "Raised": "Спрацювало",
+      "Resolved": "Знято"
+    }
   },
   "metrics": {
     "temperature": "Температура",

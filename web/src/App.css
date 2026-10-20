@@ -152,6 +152,23 @@ main {
   width: 100%;
 }
 
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.badge-raised {
+  color: var(--bad);
+}
+
+.badge-resolved {
+  color: var(--ok);
+}
+
 @media (max-width: 1000px) {
   main {
     grid-template-columns: 1fr;

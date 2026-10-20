@@ -7,7 +7,11 @@ using Pulse.Core;
 
 namespace Pulse.Api.Processing;
 
-/// <summary>Evaluates threshold rules, stores breaches and pushes them to the alert feed.</summary>
+/// <summary>
+/// Evaluates threshold rules and records state changes: one alert when a rule is breached, one when it
+/// resolves. State lives in an <see cref="AlertTracker"/> that is rebuilt from storage on the first batch,
+/// and only advances once a batch's alerts have been stored.
+/// </summary>
 public sealed class AlertEvaluator(
     IOptions<KafkaOptions> options,
     IOptions<AlertRulesOptions> rules,
@@ -15,45 +19,37 @@ public sealed class AlertEvaluator(
     IHubContext<LiveHub> hub,
     ILogger<AlertEvaluator> logger) : ReadingsConsumer(options, logger)
 {
-    private readonly AlertDebouncer _debouncer = new(rules.Value.Cooldown);
+    private readonly AlertTracker _tracker = new();
+    private bool _restored;
 
     protected override string GroupId => "pulse-alerts";
 
     protected override async Task HandleAsync(IReadOnlyList<TelemetryReading> batch, CancellationToken ct)
     {
-        var alerts = batch
-            .SelectMany(r => rules.Value.Rules.Select(rule => rule.Evaluate(r)))
-            .OfType<Alert>()
-            .Where(_debouncer.ShouldRaise)
-            .ToList();
-
-        if (alerts.Count == 0) return;
-
-        try
+        if (!_restored)
         {
-            await db.InsertAlertsAsync(alerts, ct);
-        }
-        catch
-        {
-            // The batch is redelivered; without a reset the debouncer would swallow these alerts the second time.
-            // Alerts that were stored in the meantime are skipped by the unique index.
-            _debouncer.Reset();
-            throw;
+            _tracker.Restore(await db.GetActiveAlertKeysAsync(ct));
+            _restored = true;
         }
 
-        await hub.Clients.All.SendAsync(LiveHub.AlertsEvent, alerts, ct);
+        var result = _tracker.Evaluate(batch, rules.Value.Rules);
+        if (result.Alerts.Count > 0)
+        {
+            await db.InsertAlertsAsync(result.Alerts, ct);
+            await hub.Clients.All.SendAsync(LiveHub.AlertsEvent, result.Alerts, ct);
+        }
+
+        // Not reached when storing fails: the batch is redelivered and evaluated from the same state.
+        result.Commit();
     }
 }
 
 public sealed class AlertRulesOptions
 {
-    /// <summary>Minimum event-time gap between two alerts for the same device, metric and rule.</summary>
-    public TimeSpan Cooldown { get; set; } = TimeSpan.FromMinutes(1);
-
     public List<ThresholdRule> Rules { get; set; } =
     [
-        new("temperature", -10, 80),
-        new("humidity", 5, 95),
-        new("battery", 10, null),
+        new("temperature", -10, 80, Hysteresis: 2),
+        new("humidity", 5, 95, Hysteresis: 3),
+        new("battery", 10, null, Hysteresis: 5),
     ];
 }

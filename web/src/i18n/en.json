@@ -23,7 +23,11 @@
   "alerts": {
     "title": "Alerts",
     "empty": "No alerts. Everything is within range.",
-    "value": "value {{value}}"
+    "value": "value {{value}}",
+    "state": {
+      "Raised": "Raised",
+      "Resolved": "Resolved"
+    }
   },
   "metrics": {
     "temperature": "Temperature",

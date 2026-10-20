@@ -37,11 +37,28 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(
             """
-            INSERT INTO alerts (device_id, metric, rule, value, ts)
-            VALUES (@DeviceId, @Metric, @Rule, @Value, @Timestamp)
-            ON CONFLICT (device_id, metric, rule, ts) DO NOTHING
+            INSERT INTO alerts (device_id, metric, rule, value, ts, state)
+            VALUES (@DeviceId, @Metric, @Rule, @Value, @Timestamp, @State)
+            ON CONFLICT (device_id, metric, rule, ts, state) DO NOTHING
             """,
-            alerts, cancellationToken: ct));
+            alerts.Select(a => new { a.DeviceId, a.Metric, a.Rule, a.Value, a.Timestamp, State = a.State.ToString() }),
+            cancellationToken: ct));
+    }
+
+    /// <summary>The (device, metric, rule) combinations whose most recent alert is still Raised.</summary>
+    public async Task<IReadOnlyList<AlertKey>> GetActiveAlertKeysAsync(CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<AlertKeyRow>(new CommandDefinition("""
+            SELECT device_id AS DeviceId, metric AS Metric, rule AS Rule
+            FROM (
+                SELECT DISTINCT ON (device_id, metric, rule) device_id, metric, rule, state
+                FROM alerts
+                ORDER BY device_id, metric, rule, ts DESC
+            ) latest
+            WHERE state = 'Raised'
+            """, cancellationToken: ct));
+        return rows.Select(r => new AlertKey(r.DeviceId, r.Metric, r.Rule)).ToList();
     }
 
     public async Task<IReadOnlyList<DeviceSummary>> GetDevicesAsync(CancellationToken ct)
@@ -81,11 +98,29 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
     public async Task<IReadOnlyList<Alert>> GetAlertsAsync(int limit, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
-        var rows = await conn.QueryAsync<Alert>(new CommandDefinition("""
-            SELECT device_id AS DeviceId, metric AS Metric, rule AS Rule, value AS Value, ts AS Timestamp
+        var rows = await conn.QueryAsync<AlertRow>(new CommandDefinition("""
+            SELECT device_id AS DeviceId, metric AS Metric, rule AS Rule, value AS Value, ts AS Timestamp, state AS State
             FROM alerts ORDER BY ts DESC LIMIT @limit
             """, new { limit }, cancellationToken: ct));
-        return rows.ToList();
+        return rows.Select(r => new Alert(r.DeviceId, r.Metric, r.Rule, r.Value, r.Timestamp, Enum.Parse<AlertState>(r.State))).ToList();
+    }
+
+    // Dapper binds these by property name; the public contracts stay immutable records.
+    private sealed class AlertRow
+    {
+        public string DeviceId { get; set; } = "";
+        public string Metric { get; set; } = "";
+        public string Rule { get; set; } = "";
+        public double Value { get; set; }
+        public DateTimeOffset Timestamp { get; set; }
+        public string State { get; set; } = "";
+    }
+
+    private sealed class AlertKeyRow
+    {
+        public string DeviceId { get; set; } = "";
+        public string Metric { get; set; } = "";
+        public string Rule { get; set; } = "";
     }
 }
 

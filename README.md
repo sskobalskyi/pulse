@@ -9,7 +9,8 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 ## What it demonstrates
 
 - **Event streaming:** Kafka (Redpanda) topic keyed by device id, so one device always maps to one partition and keeps its ordering.
-- **Consumer groups:** three independent groups (`pulse-writer`, `pulse-live`, `pulse-alerts`) read the same topic. Offsets are committed after a batch is handled (at-least-once delivery), batches are written with binary `COPY`.
+- **Consumer groups:** three independent groups (`pulse-writer`, `pulse-live`, `pulse-alerts`) read the same topic. Offsets are committed after a batch is handled (at-least-once delivery), batches are written with one idempotent `INSERT ... ON CONFLICT DO NOTHING`.
+- **Alerting with hysteresis:** threshold rules have a margin. A breach raises one alert, and a second "resolved" alert is recorded only when the value comes back past the margin, so a value hovering around a threshold does not flap. State is rebuilt from the database on restart.
 - **Time-series modelling:** TimescaleDB hypertable, a 1-minute continuous aggregate, a 7-day retention policy on raw data. Short chart windows read raw rows, longer ones read the aggregate.
 - **Real-time push:** SignalR hub with a throttled client store (state lives in refs and is published to React at most every 250 ms).
 - **i18n:** `en` (default) and `uk`, react-i18next with browser language detection.
@@ -71,16 +72,16 @@ cd web && npx playwright test                  # E2E, needs the stack running (P
 | --- | --- | --- |
 | `Kafka:BootstrapServers` | `localhost:19092` | `redpanda:9092` inside compose |
 | `ConnectionStrings:Timescale` | `localhost:5433` | |
-| `Alerts:Rules` | temperature `[-10, 80]`, humidity `[5, 95]`, battery `>= 10` | threshold rules, see `AlertRulesOptions` |
-| `Alerts:Cooldown` | `00:01:00` | minimum gap between alerts for the same device, metric and rule |
-| `Simulator:Devices` / `IntervalMs` / `AnomalyChance` | 20 / 1000 / 0.01 | the simulator injects out-of-range spikes on purpose |
+| `Alerts:Rules` | temperature `[-10, 80]` ±2, humidity `[5, 95]` ±3, battery `>= 10` ±5 | threshold rules with a hysteresis margin, see `AlertRulesOptions` |
+| `Simulator:Devices` / `IntervalMs` | 20 / 1000 | |
+| `Simulator:AnomalyChance` / `AnomalyMinTicks` / `AnomalyMaxTicks` | 0.002 / 5 / 15 | chance per reading that a device starts a fault, and how many readings the fault lasts |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | when set, traces and metrics are exported over OTLP |
 
 ## Trade-offs
 
 - Processors share the API process. Simple to run, but a slow consumer competes with request handling for CPU. Splitting them out is a hosting change, not a design change.
-- Alerts are debounced per device, metric and rule with a cooldown (`Alerts:Cooldown`, default 1 minute, measured in event time), so a device stuck out of range raises one alert per minute instead of one per reading. The state is in memory and per instance: after a restart or a partition rebalance the first breach alerts again, and if storing alerts fails the state is reset so the redelivered batch is not swallowed. Hysteresis (separate raise and clear thresholds) and a "resolved" event are not implemented.
-- Delivery is at-least-once, so a batch can be redelivered. Writes are idempotent: a reading is identified by `(device_id, metric, ts)` and alerts by `(device_id, metric, rule, ts)`, both enforced by unique indexes and `ON CONFLICT DO NOTHING`. The catch is that two genuinely different values for the same device, metric and timestamp collapse into the first one. Live SignalR pushes are not deduplicated, so a redelivery can briefly repeat a point in an open browser.
+- Alert state (raised or not) per device, metric and rule is kept in memory by one `AlertTracker` per instance. A batch only advances it after its alerts are stored, so a failed write is evaluated again on redelivery. On startup the state is rebuilt from the latest alert of each key in the database. With several API instances, partitions moving between them can still repeat a "raised" alert once, because each instance only knows what it saw or what was stored when it started. Alerts that are still raised when a device goes silent stay raised: there is no "no data" rule yet.
+- Delivery is at-least-once, so a batch can be redelivered. Writes are idempotent: a reading is identified by `(device_id, metric, ts)` and alerts by `(device_id, metric, rule, ts, state)`, both enforced by unique indexes and `ON CONFLICT DO NOTHING`. The catch is that two genuinely different values for the same device, metric and timestamp collapse into the first one. Live SignalR pushes are not deduplicated, so a redelivery can briefly repeat a point in an open browser.
 - Authentication is out of scope for this demo.
 
 ## Layout
