@@ -75,5 +75,17 @@ services:
     depends_on:
       - api
 
+  # Not part of `docker compose up`. Run it with: docker compose --profile loadtest run --rm k6
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [loadtest]
+    command: run /scripts/smoke.js
+    environment:
+      BASE_URL: http://api:8080
+    volumes:
+      - ./k6:/scripts:ro
+    depends_on:
+      - api
+
 volumes:
   timescale-data:

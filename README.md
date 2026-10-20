@@ -65,7 +65,19 @@ The schema script only runs on an empty database volume. After pulling schema ch
 dotnet test                                    # unit, database and pipeline tests (the last two need Docker)
 cd web && npx playwright install chromium     # once
 cd web && npx playwright test                  # E2E, needs the stack running (PULSE_WEB_URL overrides the URL)
+docker compose --profile loadtest run --rm k6  # load smoke test, needs the stack running
 ```
+
+### Load smoke test
+
+[`k6/smoke.js`](k6/smoke.js) runs for 30 seconds against the running stack: 20 requests per second of 50 readings each (1,000 readings per second) while a second scenario reads `/api/devices` and a series like a dashboard would. It is a regression gate that fits in CI, not a benchmark. The run fails (exit code 99) unless:
+
+- fewer than 1% of requests fail, and 99% of checks pass
+- p95 of ingestion is under 500 ms, and p95 of the read endpoints under 1 s
+- no iteration is dropped, meaning the arrival rate was actually reached
+- **every test device shows up in `/api/devices` after the run**. The API answers 202 as soon as Kafka has the message, so a broken consumer or database would not show in request latency. With TimescaleDB stopped the ingestion checks still pass and only this one fails (0 of 20 devices delivered).
+
+Typical local result: ingest p95 about 12 ms, devices p95 about 40 ms, 20 of 20 devices delivered. The rates can be changed per run, for example `docker compose --profile loadtest run --rm -e INGEST_RATE=100 -e DURATION=60s k6`. Use `--no-deps` when the stack is already up, otherwise compose starts its dependencies too.
 
 ## Observability
 
