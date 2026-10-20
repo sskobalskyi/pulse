@@ -1,5 +1,9 @@
 name: pulse
 
+# `docker compose up --build` starts everything: dashboard on http://localhost:8080, API on http://localhost:5080.
+# For development run only the infrastructure (`docker compose up -d redpanda timescaledb`)
+# and start the API, simulator and web app from source.
+
 services:
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.3.7
@@ -36,6 +40,40 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: src/Pulse.Api/Dockerfile
+    environment:
+      Kafka__BootstrapServers: redpanda:9092
+      ConnectionStrings__Timescale: Host=timescaledb;Port=5432;Database=pulse;Username=pulse;Password=pulse
+      Cors__Origins__0: http://localhost:8080
+    ports:
+      - "5080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+
+  simulator:
+    build:
+      context: .
+      dockerfile: src/Pulse.Simulator/Dockerfile
+    environment:
+      Simulator__ApiUrl: http://api:8080
+    depends_on:
+      - api
+    restart: on-failure
+
+  web:
+    build:
+      context: web
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
 
 volumes:
   timescale-data:

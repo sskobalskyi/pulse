@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/test-results/
+web/e2e/screenshots/
+.git/
