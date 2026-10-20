@@ -62,6 +62,32 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         return rows.Select(r => new AlertKey(r.DeviceId, r.Metric, r.Rule)).ToList();
     }
 
+    /// <summary>
+    /// Runs <paramref name="work"/> only if no other instance holds the advisory lock <paramref name="lockKey"/>.
+    /// The lock belongs to a database session, so it is released if this process dies, and the connection is
+    /// reset when it goes back to the pool even if the explicit unlock were skipped.
+    /// Returns false, without running anything, when someone else holds it.
+    /// </summary>
+    public async Task<bool> TryRunExclusiveAsync(long lockKey, Func<Task> work, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+
+        var acquired = await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT pg_try_advisory_lock(@lockKey)", new { lockKey }, cancellationToken: ct));
+        if (!acquired) return false;
+
+        try
+        {
+            await work();
+            return true;
+        }
+        finally
+        {
+            // Not cancellable: the lock must not outlive the work because the caller was shutting down.
+            await conn.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT pg_advisory_unlock(@lockKey)", new { lockKey }));
+        }
+    }
+
     /// <summary>Records that these series just reported. The time is the database clock at receipt, not the device's.</summary>
     public async Task TouchLastSeenAsync(IReadOnlyList<TelemetryReading> readings, CancellationToken ct)
     {
