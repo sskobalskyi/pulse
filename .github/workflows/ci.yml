@@ -48,5 +48,7 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
           PULSE_WEB_URL=http://localhost:8080 npx playwright test
+      # The stack is already up, so skip dependencies instead of letting compose touch it.
+      - run: docker compose --profile loadtest run --rm --no-deps k6
       - if: failure()
         run: docker compose logs --no-color
