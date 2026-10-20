@@ -1,0 +1,34 @@
+{
+  "app": {
+    "title": "Pulse",
+    "subtitle": "Real-time device telemetry"
+  },
+  "status": {
+    "connecting": "Connecting",
+    "live": "Live",
+    "reconnecting": "Reconnecting",
+    "offline": "Offline"
+  },
+  "devices": {
+    "title": "Devices",
+    "empty": "No readings yet. Start the simulator to see data.",
+    "filter": "Filter devices"
+  },
+  "chart": {
+    "title": "{{device}} · {{metric}}",
+    "select": "Select a device on the left to see its live chart.",
+    "min": "min",
+    "max": "max"
+  },
+  "alerts": {
+    "title": "Alerts",
+    "empty": "No alerts. Everything is within range.",
+    "value": "value {{value}}"
+  },
+  "metrics": {
+    "temperature": "Temperature",
+    "humidity": "Humidity",
+    "battery": "Battery"
+  },
+  "language": "Language"
+}
