@@ -1,5 +1,7 @@
 # Pulse
 
+[![CI](https://github.com/sskobalskyi/pulse/actions/workflows/ci.yml/badge.svg)](https://github.com/sskobalskyi/pulse/actions/workflows/ci.yml)
+
 Real-time device telemetry platform. A simulator emits readings, an ingestion API publishes them to Kafka, independent stream processors persist them to TimescaleDB, evaluate alert rules and push live updates to a React dashboard over SignalR.
 
 ![Pulse dashboard](web/e2e/screenshots/dashboard-en.png)
@@ -70,13 +72,14 @@ cd web && npx playwright test                  # E2E, needs the stack running (P
 | `Kafka:BootstrapServers` | `localhost:19092` | `redpanda:9092` inside compose |
 | `ConnectionStrings:Timescale` | `localhost:5433` | |
 | `Alerts:Rules` | temperature `[-10, 80]`, humidity `[5, 95]`, battery `>= 10` | threshold rules, see `AlertRulesOptions` |
+| `Alerts:Cooldown` | `00:01:00` | minimum gap between alerts for the same device, metric and rule |
 | `Simulator:Devices` / `IntervalMs` / `AnomalyChance` | 20 / 1000 / 0.01 | the simulator injects out-of-range spikes on purpose |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | when set, traces and metrics are exported over OTLP |
 
 ## Trade-offs
 
 - Processors share the API process. Simple to run, but a slow consumer competes with request handling for CPU. Splitting them out is a hosting change, not a design change.
-- Alerts are evaluated per reading with no state, so a device stuck out of range raises an alert on every reading. Debouncing or hysteresis is the next step.
+- Alerts are debounced per device, metric and rule with a cooldown (`Alerts:Cooldown`, default 1 minute, measured in event time), so a device stuck out of range raises one alert per minute instead of one per reading. The state is in memory and per instance: after a restart or a partition rebalance the first breach alerts again, and if storing alerts fails the state is reset so the redelivered batch is not swallowed. Hysteresis (separate raise and clear thresholds) and a "resolved" event are not implemented.
 - Delivery is at-least-once, so a batch can be redelivered. Writes are idempotent: a reading is identified by `(device_id, metric, ts)` and alerts by `(device_id, metric, rule, ts)`, both enforced by unique indexes and `ON CONFLICT DO NOTHING`. The catch is that two genuinely different values for the same device, metric and timestamp collapse into the first one. Live SignalR pushes are not deduplicated, so a redelivery can briefly repeat a point in an open browser.
 - Authentication is out of scope for this demo.
 

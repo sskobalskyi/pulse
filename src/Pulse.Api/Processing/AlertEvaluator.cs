@@ -15,6 +15,8 @@ public sealed class AlertEvaluator(
     IHubContext<LiveHub> hub,
     ILogger<AlertEvaluator> logger) : ReadingsConsumer(options, logger)
 {
+    private readonly AlertDebouncer _debouncer = new(rules.Value.Cooldown);
+
     protected override string GroupId => "pulse-alerts";
 
     protected override async Task HandleAsync(IReadOnlyList<TelemetryReading> batch, CancellationToken ct)
@@ -22,17 +24,32 @@ public sealed class AlertEvaluator(
         var alerts = batch
             .SelectMany(r => rules.Value.Rules.Select(rule => rule.Evaluate(r)))
             .OfType<Alert>()
+            .Where(_debouncer.ShouldRaise)
             .ToList();
 
         if (alerts.Count == 0) return;
 
-        await db.InsertAlertsAsync(alerts, ct);
+        try
+        {
+            await db.InsertAlertsAsync(alerts, ct);
+        }
+        catch
+        {
+            // The batch is redelivered; without a reset the debouncer would swallow these alerts the second time.
+            // Alerts that were stored in the meantime are skipped by the unique index.
+            _debouncer.Reset();
+            throw;
+        }
+
         await hub.Clients.All.SendAsync(LiveHub.AlertsEvent, alerts, ct);
     }
 }
 
 public sealed class AlertRulesOptions
 {
+    /// <summary>Minimum event-time gap between two alerts for the same device, metric and rule.</summary>
+    public TimeSpan Cooldown { get; set; } = TimeSpan.FromMinutes(1);
+
     public List<ThresholdRule> Rules { get; set; } =
     [
         new("temperature", -10, 80),
