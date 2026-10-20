@@ -1,10 +1,21 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { LiveChart } from './components/LiveChart'
 import { LOCALES } from './i18n'
-import { seriesKey, type Alert, type Reading } from './types'
+import { fetchDevices } from './api'
+import { seriesKey, type Alert } from './types'
 import { useLive } from './useLive'
 import './App.css'
+
+const STATUS_POLL_MS = 5000
+
+interface Row {
+  deviceId: string
+  metric: string
+  value: number | null
+  silent: boolean
+}
 
 export default function App() {
   const { t, i18n } = useTranslation()
@@ -12,14 +23,23 @@ export default function App() {
   const [selected, setSelected] = useState<{ deviceId: string; metric: string } | null>(null)
   const [filter, setFilter] = useState('')
 
+  // The API knows every series that ever reported and whether it went quiet; SignalR keeps the values fresh.
+  const { data: statuses } = useQuery({ queryKey: ['devices'], queryFn: fetchDevices, refetchInterval: STATUS_POLL_MS })
+
   const devices = useMemo(() => {
-    const byDevice = new Map<string, Reading[]>()
-    for (const reading of latest.values()) {
-      if (filter && !reading.deviceId.includes(filter.toLowerCase())) continue
-      byDevice.set(reading.deviceId, [...(byDevice.get(reading.deviceId) ?? []), reading])
+    const rows = new Map<string, Row>()
+    for (const d of statuses ?? []) rows.set(seriesKey(d.deviceId, d.metric), { ...d })
+    for (const [key, reading] of latest) {
+      rows.set(key, { deviceId: reading.deviceId, metric: reading.metric, value: reading.value, silent: rows.get(key)?.silent ?? false })
+    }
+
+    const byDevice = new Map<string, Row[]>()
+    for (const row of rows.values()) {
+      if (filter && !row.deviceId.includes(filter.toLowerCase())) continue
+      byDevice.set(row.deviceId, [...(byDevice.get(row.deviceId) ?? []), row])
     }
     return [...byDevice.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [latest, filter])
+  }, [statuses, latest, filter])
 
   const metricLabel = (metric: string) => t(`metrics.${metric}`, { defaultValue: metric })
   const language = LOCALES.find((l) => i18n.resolvedLanguage === l) ?? 'en'
@@ -81,12 +101,13 @@ export default function App() {
                         return (
                           <button
                             key={r.metric}
-                            className={isSelected ? 'metric selected' : 'metric'}
+                            className={`metric${isSelected ? ' selected' : ''}${r.silent ? ' silent' : ''}`}
                             aria-pressed={isSelected}
                             onClick={() => setSelected({ deviceId, metric: r.metric })}
                           >
                             <span className="muted">{metricLabel(r.metric)}</span>
-                            <span className="value">{r.value.toFixed(1)}</span>
+                            <span className="value">{r.value === null ? '—' : r.value.toFixed(1)}</span>
+                            {r.silent && <span className="silent-label">{t('devices.silent')}</span>}
                           </button>
                         )
                       })}

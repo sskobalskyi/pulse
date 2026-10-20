@@ -91,17 +91,33 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         return rows.Select(r => new SilentSeries(r.DeviceId, r.Metric, TimeSpan.FromSeconds(r.SilentSeconds))).ToList();
     }
 
-    public async Task<IReadOnlyList<DeviceSummary>> GetDevicesAsync(CancellationToken ct)
+    /// <summary>
+    /// Every series that has ever reported, with its latest stored reading and whether it has gone quiet.
+    /// Driven by <c>device_last_seen</c> rather than recent readings, so a silent device stays visible
+    /// instead of vanishing from the list exactly when it matters.
+    /// </summary>
+    public async Task<IReadOnlyList<DeviceSummary>> GetDevicesAsync(TimeSpan silentAfter, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
-        var rows = await conn.QueryAsync<DeviceSummary>(new CommandDefinition("""
-            SELECT DISTINCT ON (device_id, metric)
-                   device_id AS DeviceId, metric AS Metric, value AS Value, ts AS Timestamp
-            FROM readings
-            WHERE ts > now() - INTERVAL '10 minutes'
-            ORDER BY device_id, metric, ts DESC
-            """, cancellationToken: ct));
-        return rows.ToList();
+        var rows = await conn.QueryAsync<DeviceRow>(new CommandDefinition("""
+            SELECT s.device_id AS DeviceId,
+                   s.metric AS Metric,
+                   r.value AS Value,
+                   r.ts AS Timestamp,
+                   s.last_seen_at AS LastSeenAt,
+                   s.last_seen_at < now() - @silentAfter AS Silent
+            FROM device_last_seen s
+            LEFT JOIN LATERAL (
+                SELECT value, ts FROM readings
+                WHERE device_id = s.device_id AND metric = s.metric
+                ORDER BY ts DESC
+                LIMIT 1
+            ) r ON true
+            ORDER BY s.device_id, s.metric
+            """, new { silentAfter }, cancellationToken: ct));
+
+        // Value and Timestamp are null when the readings have aged out of retention but the series is still known.
+        return rows.Select(r => new DeviceSummary(r.DeviceId, r.Metric, r.Value, r.Timestamp, r.LastSeenAt, r.Silent)).ToList();
     }
 
     public async Task<IReadOnlyList<SeriesPoint>> GetSeriesAsync(string deviceId, string metric, TimeSpan window, CancellationToken ct)
@@ -155,6 +171,16 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         public double SilentSeconds { get; set; }
     }
 
+    private sealed class DeviceRow
+    {
+        public string DeviceId { get; set; } = "";
+        public string Metric { get; set; } = "";
+        public double? Value { get; set; }
+        public DateTimeOffset? Timestamp { get; set; }
+        public DateTimeOffset LastSeenAt { get; set; }
+        public bool Silent { get; set; }
+    }
+
     private sealed class AlertKeyRow
     {
         public string DeviceId { get; set; } = "";
@@ -163,6 +189,10 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
     }
 }
 
-public sealed record DeviceSummary(string DeviceId, string Metric, double Value, DateTimeOffset Timestamp);
+/// <param name="Value">Latest stored reading, or null if it has aged out of retention.</param>
+/// <param name="Timestamp">Device time of that reading.</param>
+/// <param name="LastSeenAt">When the server last received anything for this series.</param>
+/// <param name="Silent">True when nothing has arrived for longer than the no-data timeout.</param>
+public sealed record DeviceSummary(string DeviceId, string Metric, double? Value, DateTimeOffset? Timestamp, DateTimeOffset LastSeenAt, bool Silent);
 
 public sealed record SeriesPoint(DateTimeOffset Timestamp, double Avg, double Min, double Max);

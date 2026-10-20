@@ -191,6 +191,56 @@ public sealed class PulseDbTests : IAsyncLifetime
         Assert.Empty(await _db.GetSilentSeriesAsync(TimeSpan.FromSeconds(30), default));
     }
 
+    [Fact]
+    public async Task Devices_list_shows_the_latest_reading_of_every_series_that_has_reported()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var readings = new[]
+        {
+            new TelemetryReading("dev-1", "temperature", 21.5, now.AddSeconds(-5)),
+            new TelemetryReading("dev-1", "temperature", 22.0, now.AddSeconds(-1)),
+            new TelemetryReading("dev-1", "humidity", 40, now),
+            new TelemetryReading("dev-2", "temperature", 19, now),
+        };
+        await _db.InsertReadingsAsync(readings, default);
+        await _db.TouchLastSeenAsync(readings, default);
+
+        var devices = await _db.GetDevicesAsync(TimeSpan.FromSeconds(30), default);
+
+        Assert.Equal(
+            [("dev-1", "humidity", 40.0), ("dev-1", "temperature", 22.0), ("dev-2", "temperature", 19.0)],
+            devices.Select(d => (d.DeviceId, d.Metric, d.Value!.Value)));
+        Assert.All(devices, d => Assert.False(d.Silent));
+    }
+
+    [Fact]
+    public async Task A_silent_series_stays_in_the_devices_list_and_is_flagged()
+    {
+        var reading = new TelemetryReading("dev-1", "temperature", 20, DateTimeOffset.UtcNow);
+        await _db.InsertReadingsAsync([reading], default);
+        await _db.TouchLastSeenAsync([reading], default);
+        await Task.Delay(1500);
+
+        var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(1), default));
+
+        Assert.True(device.Silent);
+        Assert.Equal(20, device.Value); // its last known value is still shown
+        Assert.True(DateTimeOffset.UtcNow - device.LastSeenAt > TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task A_series_whose_readings_are_gone_is_still_listed_without_a_value()
+    {
+        // Readings age out after the retention period while the series is still known.
+        await _db.TouchLastSeenAsync([new TelemetryReading("dev-1", "temperature", 20, DateTimeOffset.UtcNow)], default);
+
+        var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(30), default));
+
+        Assert.Null(device.Value);
+        Assert.Null(device.Timestamp);
+        Assert.False(device.Silent);
+    }
+
     private async Task<long> Count(string table)
     {
         await using var conn = await _dataSource.OpenConnectionAsync();

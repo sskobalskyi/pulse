@@ -25,3 +25,13 @@ export interface SeriesPoint {
 export type ConnectionStatus = 'connecting' | 'live' | 'reconnecting' | 'offline'
 
 export const seriesKey = (deviceId: string, metric: string) => `${deviceId}|${metric}`
+
+/** A series as the API lists it. `value` is null once its readings have aged out; `silent` means no data for longer than the timeout. */
+export interface DeviceStatus {
+  deviceId: string
+  metric: string
+  value: number | null
+  timestamp: string | null
+  lastSeenAt: string
+  silent: boolean
+}

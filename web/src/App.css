@@ -139,6 +139,20 @@ main {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+.metric.silent {
+  border-style: dashed;
+  border-color: var(--warn);
+}
+
+.metric.silent .value {
+  color: var(--muted);
+}
+
+.silent-label {
+  font-size: 0.7rem;
+  color: var(--warn);
+}
+
 .metric .muted {
   font-size: 0.75rem;
 }

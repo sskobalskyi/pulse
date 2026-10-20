@@ -1,4 +1,4 @@
-import type { Alert, Reading, SeriesPoint } from './types'
+import type { Alert, DeviceStatus, SeriesPoint } from './types'
 
 export const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:5080'
 
@@ -8,7 +8,7 @@ async function get<T>(path: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export const fetchDevices = () => get<Reading[]>('/api/devices')
+export const fetchDevices = () => get<DeviceStatus[]>('/api/devices')
 
 export const fetchAlerts = (limit = 50) => get<Alert[]>(`/api/alerts?limit=${limit}`)
 
