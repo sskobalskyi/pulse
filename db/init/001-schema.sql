@@ -8,7 +8,10 @@ CREATE TABLE readings (
 );
 
 SELECT create_hypertable('readings', 'ts', chunk_time_interval => INTERVAL '1 day');
-CREATE INDEX ix_readings_device_metric_ts ON readings (device_id, metric, ts DESC);
+-- A reading is identified by device, metric and timestamp. The unique index makes redelivered Kafka
+-- batches harmless (INSERT ... ON CONFLICT DO NOTHING) and still serves per-series range queries.
+-- Hypertable unique indexes must include the partitioning column (ts).
+CREATE UNIQUE INDEX ux_readings_identity ON readings (device_id, metric, ts DESC);
 
 -- Raw readings are only needed for a short window; aggregates live longer.
 SELECT add_retention_policy('readings', INTERVAL '7 days');
@@ -40,3 +43,5 @@ CREATE TABLE alerts (
     ts        timestamptz      NOT NULL
 );
 CREATE INDEX ix_alerts_ts ON alerts (ts DESC);
+-- The same breach reprocessed after a redelivery must not create a second alert.
+CREATE UNIQUE INDEX ux_alerts_identity ON alerts (device_id, metric, rule, ts);

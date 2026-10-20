@@ -53,10 +53,12 @@ dotnet run --project src/Pulse.Simulator
 cd web && npm install && npm run dev          # http://localhost:5173
 ```
 
+The schema script only runs on an empty database volume. After pulling schema changes, reset it with `docker compose down -v`.
+
 ### Tests
 
 ```bash
-dotnet test                                    # unit tests
+dotnet test                                    # unit tests plus PulseDb tests against a TimescaleDB Testcontainer (needs Docker)
 cd web && npx playwright install chromium     # once
 cd web && npx playwright test                  # E2E, needs the stack running (PULSE_WEB_URL overrides the URL)
 ```
@@ -75,7 +77,7 @@ cd web && npx playwright test                  # E2E, needs the stack running (P
 
 - Processors share the API process. Simple to run, but a slow consumer competes with request handling for CPU. Splitting them out is a hosting change, not a design change.
 - Alerts are evaluated per reading with no state, so a device stuck out of range raises an alert on every reading. Debouncing or hysteresis is the next step.
-- Delivery is at-least-once, and `readings` has no unique key, so a redelivered batch can create duplicate rows. A device id plus timestamp key with `ON CONFLICT DO NOTHING` would make writes idempotent.
+- Delivery is at-least-once, so a batch can be redelivered. Writes are idempotent: a reading is identified by `(device_id, metric, ts)` and alerts by `(device_id, metric, rule, ts)`, both enforced by unique indexes and `ON CONFLICT DO NOTHING`. The catch is that two genuinely different values for the same device, metric and timestamp collapse into the first one. Live SignalR pushes are not deduplicated, so a redelivery can briefly repeat a point in an open browser.
 - Authentication is out of scope for this demo.
 
 ## Layout
