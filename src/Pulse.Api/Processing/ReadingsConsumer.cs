@@ -32,7 +32,7 @@ public abstract class ReadingsConsumer(IOptions<KafkaOptions> options, ILogger l
         {
             BootstrapServers = options.Value.BootstrapServers,
             GroupId = GroupId,
-            AutoOffsetReset = AutoOffsetReset.Latest,
+            AutoOffsetReset = options.Value.AutoOffsetReset,
             EnableAutoCommit = false,
             PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky,
         };

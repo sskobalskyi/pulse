@@ -15,7 +15,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Real-time push:** SignalR hub with a throttled client store (state lives in refs and is published to React at most every 250 ms).
 - **Observability:** OpenTelemetry traces across HTTP and Kafka (context in message headers, span links for batches), metrics including per-partition consumer lag, and correlated logs. See [Observability](#observability).
 - **i18n:** `en` (default) and `uk`, react-i18next with browser language detection.
-- **Tests:** xUnit for the alert rules, Playwright E2E for the dashboard in both locales.
+- **Tests:** xUnit for the alert rules and tracker, Testcontainers tests for the database layer and for the whole backend pipeline (HTTP ingest, Kafka, stream processors, TimescaleDB and SignalR in one process against real containers), and Playwright E2E for the dashboard in both locales.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ The schema script only runs on an empty database volume. After pulling schema ch
 ### Tests
 
 ```bash
-dotnet test                                    # unit tests plus PulseDb tests against a TimescaleDB Testcontainer (needs Docker)
+dotnet test                                    # unit, database and pipeline tests (the last two need Docker)
 cd web && npx playwright install chromium     # once
 cd web && npx playwright test                  # E2E, needs the stack running (PULSE_WEB_URL overrides the URL)
 ```
