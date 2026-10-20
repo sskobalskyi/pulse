@@ -11,27 +11,36 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
 
     public async Task InsertReadingsAsync(IReadOnlyList<TelemetryReading> readings, CancellationToken ct)
     {
+        // Kafka delivers at least once, so a batch can arrive again after a rebalance or a failed commit.
+        // Rows already stored (same device, metric and timestamp) are skipped instead of duplicated.
+        // One set-based INSERT from arrays keeps the batch to a single round trip.
         await using var conn = await dataSource.OpenConnectionAsync(ct);
-        await using var writer = await conn.BeginBinaryImportAsync(
-            "COPY readings (device_id, metric, value, ts) FROM STDIN (FORMAT BINARY)", ct);
+        await using var cmd = new NpgsqlCommand("""
+            INSERT INTO readings (device_id, metric, value, ts)
+            SELECT * FROM unnest(@deviceIds, @metrics, @values, @timestamps)
+            ON CONFLICT (device_id, metric, ts) DO NOTHING
+            """, conn);
 
-        foreach (var r in readings)
+        cmd.Parameters.Add(new NpgsqlParameter<string[]>("deviceIds", readings.Select(r => r.DeviceId).ToArray()));
+        cmd.Parameters.Add(new NpgsqlParameter<string[]>("metrics", readings.Select(r => r.Metric).ToArray()));
+        cmd.Parameters.Add(new NpgsqlParameter<double[]>("values", readings.Select(r => r.Value).ToArray()));
+        cmd.Parameters.Add(new NpgsqlParameter<DateTime[]>("timestamps", readings.Select(r => r.Timestamp.UtcDateTime).ToArray())
         {
-            await writer.StartRowAsync(ct);
-            await writer.WriteAsync(r.DeviceId, ct);
-            await writer.WriteAsync(r.Metric, ct);
-            await writer.WriteAsync(r.Value, ct);
-            await writer.WriteAsync(r.Timestamp.UtcDateTime, NpgsqlDbType.TimestampTz, ct);
-        }
+            NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.TimestampTz,
+        });
 
-        await writer.CompleteAsync(ct);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task InsertAlertsAsync(IReadOnlyList<Alert> alerts, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO alerts (device_id, metric, rule, value, ts) VALUES (@DeviceId, @Metric, @Rule, @Value, @Timestamp)",
+            """
+            INSERT INTO alerts (device_id, metric, rule, value, ts)
+            VALUES (@DeviceId, @Metric, @Rule, @Value, @Timestamp)
+            ON CONFLICT (device_id, metric, rule, ts) DO NOTHING
+            """,
             alerts, cancellationToken: ct));
     }
 
