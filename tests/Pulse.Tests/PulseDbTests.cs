@@ -25,9 +25,7 @@ public sealed class PulseDbTests : IAsyncLifetime
         await _container.StartAsync();
         _dataSource = NpgsqlDataSource.Create(_container.GetConnectionString());
 
-        await using var conn = await _dataSource.OpenConnectionAsync();
-        await using var cmd = new NpgsqlCommand(await File.ReadAllTextAsync(SchemaPath()), conn);
-        await cmd.ExecuteNonQueryAsync();
+        await TestSchema.ApplyAsync(_dataSource);
 
         _db = new PulseDb(_dataSource);
     }
@@ -129,15 +127,5 @@ public sealed class PulseDbTests : IAsyncLifetime
         await using var conn = await _dataSource.OpenConnectionAsync();
         await using var cmd = new NpgsqlCommand($"SELECT count(*) FROM {table}", conn);
         return (long)(await cmd.ExecuteScalarAsync())!;
-    }
-
-    private static string SchemaPath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Pulse.slnx")))
-            dir = dir.Parent;
-
-        return Path.Combine(dir?.FullName ?? throw new FileNotFoundException("Pulse.slnx not found above the test binaries"),
-            "db", "init", "001-schema.sql");
     }
 }
