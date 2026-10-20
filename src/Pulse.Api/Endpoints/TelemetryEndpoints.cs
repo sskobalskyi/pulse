@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Confluent.Kafka;
+using Pulse.Api.Observability;
 using Pulse.Api.Storage;
 using Pulse.Core;
 
@@ -24,16 +26,32 @@ public static class TelemetryEndpoints
     private static async Task<IResult> IngestAsync(TelemetryReading[] readings, IProducer<string, string> producer, CancellationToken ct)
     {
         if (readings.Length is 0 or > MaxBatch)
+        {
+            PulseTelemetry.BatchesRejected.Add(1, new KeyValuePair<string, object?>("reason", "size"));
             return Results.Problem($"Batch must contain between 1 and {MaxBatch} readings.", statusCode: StatusCodes.Status400BadRequest);
+        }
 
         if (readings.Any(r => string.IsNullOrWhiteSpace(r.DeviceId) || string.IsNullOrWhiteSpace(r.Metric) || !double.IsFinite(r.Value)))
+        {
+            PulseTelemetry.BatchesRejected.Add(1, new KeyValuePair<string, object?>("reason", "invalid"));
             return Results.Problem("Every reading needs a device id, a metric and a finite value.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        using var activity = PulseTelemetry.Source.StartActivity($"{Topics.Readings} publish", ActivityKind.Producer);
+        activity?.SetTag("messaging.system", "kafka");
+        activity?.SetTag("messaging.destination.name", Topics.Readings);
+        activity?.SetTag("messaging.batch.message_count", readings.Length);
 
         // Keyed by device id: Kafka hashes the key, so readings of one device stay ordered on one partition.
         foreach (var r in readings)
-            producer.Produce(Topics.Readings, new Message<string, string> { Key = r.DeviceId, Value = JsonSerializer.Serialize(r) });
+        {
+            var message = new Message<string, string> { Key = r.DeviceId, Value = JsonSerializer.Serialize(r), Headers = new Headers() };
+            KafkaTraceContext.Inject(message.Headers, activity);
+            producer.Produce(Topics.Readings, message);
+        }
 
         await Task.Run(() => producer.Flush(TimeSpan.FromSeconds(5)), ct);
+        PulseTelemetry.ReadingsIngested.Add(readings.Length);
         return Results.Accepted(value: new { accepted = readings.Length });
     }
 }

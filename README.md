@@ -13,6 +13,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Alerting with hysteresis:** threshold rules have a margin. A breach raises one alert, and a second "resolved" alert is recorded only when the value comes back past the margin, so a value hovering around a threshold does not flap. State is rebuilt from the database on restart.
 - **Time-series modelling:** TimescaleDB hypertable, a 1-minute continuous aggregate, a 7-day retention policy on raw data. Short chart windows read raw rows, longer ones read the aggregate.
 - **Real-time push:** SignalR hub with a throttled client store (state lives in refs and is published to React at most every 250 ms).
+- **Observability:** OpenTelemetry traces across HTTP and Kafka (context in message headers, span links for batches), metrics including per-partition consumer lag, and correlated logs. See [Observability](#observability).
 - **i18n:** `en` (default) and `uk`, react-i18next with browser language detection.
 - **Tests:** xUnit for the alert rules, Playwright E2E for the dashboard in both locales.
 
@@ -66,6 +67,39 @@ cd web && npx playwright install chromium     # once
 cd web && npx playwright test                  # E2E, needs the stack running (PULSE_WEB_URL overrides the URL)
 ```
 
+## Observability
+
+The API and the simulator are instrumented with OpenTelemetry and export over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. To look at it, start the stack with the extra compose file, which adds the .NET Aspire Dashboard:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build
+```
+
+Dashboard: http://localhost:18888 (no login, local use only, telemetry is kept in memory).
+
+![Traces in the Aspire Dashboard](docs/images/aspire-traces.png)
+
+**Traces.** Every simulator tick is a trace that continues into the API (`pulse.readings publish`). The trace context travels in the Kafka message headers (`traceparent`). A consumer batch mixes messages from many requests, so each batch is its own trace (`pulse-writer process`, `pulse-live process`, `pulse-alerts process`) with span links back to the producer spans (capped at 10 per batch). Npgsql adds the database spans underneath.
+
+![A consumer batch trace](docs/images/aspire-trace-writer.png)
+
+**Metrics** (meter `Pulse`, plus ASP.NET Core, Kestrel, Npgsql and .NET runtime):
+
+| Metric | Meaning |
+| --- | --- |
+| `pulse.readings.ingested` | readings accepted and published to Kafka |
+| `pulse.ingest.rejected` | rejected batches, tagged by reason |
+| `pulse.consumer.batch.size` / `.duration` | per consumer group, duration also by outcome |
+| `pulse.consumer.failures` | batches that failed and will be redelivered |
+| `pulse.consumer.lag` | messages behind the end of each partition, per group and partition |
+| `pulse.alerts` | alert state changes, by state and metric |
+| `pulse.signalr.connections` | browsers connected to the live hub |
+| `pulse.simulator.readings.sent` / `.send.failures` | simulator side |
+
+**Logs** go through the same exporter, so each log line carries the trace id of the span it was written in.
+
+The Aspire Dashboard is a viewer for local development. A full Grafana, Prometheus and Tempo stack is out of scope here.
+
 ## Configuration
 
 | Setting | Default | Notes |
@@ -75,7 +109,7 @@ cd web && npx playwright test                  # E2E, needs the stack running (P
 | `Alerts:Rules` | temperature `[-10, 80]` ±2, humidity `[5, 95]` ±3, battery `>= 10` ±5 | threshold rules with a hysteresis margin, see `AlertRulesOptions` |
 | `Simulator:Devices` / `IntervalMs` | 20 / 1000 | |
 | `Simulator:AnomalyChance` / `AnomalyMinTicks` / `AnomalyMaxTicks` | 0.002 / 5 / 15 | chance per reading that a device starts a fault, and how many readings the fault lasts |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | when set, traces and metrics are exported over OTLP |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | when set, traces, metrics and logs are exported over OTLP |
 
 ## Trade-offs
 
