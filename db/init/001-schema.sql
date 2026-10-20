@@ -40,8 +40,12 @@ CREATE TABLE alerts (
     metric    text             NOT NULL,
     rule      text             NOT NULL,
     value     double precision NOT NULL,
-    ts        timestamptz      NOT NULL
+    ts        timestamptz      NOT NULL,
+    -- 'Raised' when the rule was breached, 'Resolved' when it cleared past the hysteresis margin.
+    state     text             NOT NULL CHECK (state IN ('Raised', 'Resolved'))
 );
 CREATE INDEX ix_alerts_ts ON alerts (ts DESC);
--- The same breach reprocessed after a redelivery must not create a second alert.
-CREATE UNIQUE INDEX ux_alerts_identity ON alerts (device_id, metric, rule, ts);
+-- The same state change reprocessed after a redelivery must not create a second row.
+CREATE UNIQUE INDEX ux_alerts_identity ON alerts (device_id, metric, rule, ts, state);
+-- Finds the latest state of every (device, metric, rule) when the evaluator restarts.
+CREATE INDEX ix_alerts_key_ts ON alerts (device_id, metric, rule, ts DESC);

@@ -9,6 +9,7 @@ export interface Alert {
   deviceId: string
   metric: string
   rule: string
+  state: 'Raised' | 'Resolved'
   value: number
   timestamp: string
 }

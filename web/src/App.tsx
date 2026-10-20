@@ -114,7 +114,8 @@ export default function App() {
             <ul>
               {alerts.map((a, i) => (
                 <li key={`${a.deviceId}-${a.metric}-${a.timestamp}-${i}`}>
-                  <strong>{a.deviceId}</strong> · {metricLabel(a.metric)}
+                  <strong>{a.deviceId}</strong> · {metricLabel(a.metric)}{' '}
+                  <span className={`badge badge-${a.state.toLowerCase()}`}>{t(`alerts.state.${a.state}`)}</span>
                   <div className="muted">
                     {t('alerts.value', { value: a.value })} · {new Date(a.timestamp).toLocaleTimeString(i18n.language)}
                   </div>

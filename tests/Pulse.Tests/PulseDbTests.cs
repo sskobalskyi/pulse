@@ -89,6 +89,41 @@ public sealed class PulseDbTests : IAsyncLifetime
         Assert.Equal(1, await Count("alerts"));
     }
 
+    [Fact]
+    public async Task Raised_and_resolved_alerts_round_trip_with_their_state()
+    {
+        await _db.InsertAlertsAsync(
+        [
+            new Alert("dev-1", "temperature", "r", 95, T0, AlertState.Raised),
+            new Alert("dev-1", "temperature", "r", 70, T0.AddMinutes(5), AlertState.Resolved),
+        ], default);
+
+        var alerts = await _db.GetAlertsAsync(10, default);
+
+        Assert.Equal([AlertState.Resolved, AlertState.Raised], alerts.Select(a => a.State)); // newest first
+        Assert.Equal(T0.AddMinutes(5), alerts[0].Timestamp);
+    }
+
+    [Fact]
+    public async Task Active_alert_keys_are_those_whose_latest_alert_is_raised()
+    {
+        await _db.InsertAlertsAsync(
+        [
+            new Alert("dev-1", "temperature", "r", 95, T0, AlertState.Raised),
+            new Alert("dev-1", "temperature", "r", 70, T0.AddMinutes(1), AlertState.Resolved), // resolved again
+            new Alert("dev-2", "temperature", "r", 95, T0, AlertState.Raised),                  // still raised
+            new Alert("dev-3", "humidity", "r", 99, T0, AlertState.Raised),
+            new Alert("dev-3", "humidity", "r", 50, T0.AddMinutes(1), AlertState.Resolved),
+            new Alert("dev-3", "humidity", "r", 99, T0.AddMinutes(2), AlertState.Raised),       // raised again
+        ], default);
+
+        var active = await _db.GetActiveAlertKeysAsync(default);
+
+        Assert.Equivalent(
+            new[] { new AlertKey("dev-2", "temperature", "r"), new AlertKey("dev-3", "humidity", "r") },
+            active);
+    }
+
     private async Task<long> Count(string table)
     {
         await using var conn = await _dataSource.OpenConnectionAsync();
