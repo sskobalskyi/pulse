@@ -20,7 +20,8 @@ public sealed class SilenceOptions
 /// <summary>
 /// Raises a "no data" alert when a device stops reporting a metric, and resolves it when data resumes.
 /// A silent device sends nothing, so this cannot be driven by the Kafka consumers: it polls the
-/// last-seen table on a timer instead. Many instances can run it, see the README for the caveat.
+/// last-seen table on a timer instead. Every API instance runs it, and a Postgres advisory lock makes sure
+/// only one of them evaluates in any given round.
 /// </summary>
 public sealed class SilenceMonitor(
     IOptions<SilenceOptions> options,
@@ -28,8 +29,10 @@ public sealed class SilenceMonitor(
     IHubContext<LiveHub> hub,
     ILogger<SilenceMonitor> logger) : BackgroundService
 {
+    /// <summary>Arbitrary but fixed: every instance must use the same number for the lock to mean anything.</summary>
+    public const long LeaderLockKey = 7_300_001;
+
     private readonly SilenceTracker _tracker = new(options.Value.Timeout);
-    private bool _restored;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -45,7 +48,7 @@ public sealed class SilenceMonitor(
         {
             try
             {
-                await CheckAsync(o.Timeout, stoppingToken);
+                await CheckOnceAsync(stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -55,13 +58,18 @@ public sealed class SilenceMonitor(
         } while (await WaitAsync(timer, stoppingToken));
     }
 
-    private async Task CheckAsync(TimeSpan timeout, CancellationToken ct)
+    /// <summary>
+    /// One check. Only the instance that holds the database lock does anything, so several API instances
+    /// raise each alert once. Returns false when another instance is the leader for this round.
+    /// </summary>
+    public Task<bool> CheckOnceAsync(CancellationToken ct) =>
+        db.TryRunExclusiveAsync(LeaderLockKey, () => EvaluateAsync(options.Value.Timeout, ct), ct);
+
+    private async Task EvaluateAsync(TimeSpan timeout, CancellationToken ct)
     {
-        if (!_restored)
-        {
-            _tracker.Restore(await db.GetActiveAlertKeysAsync(AlertKind.NoData, ct));
-            _restored = true;
-        }
+        // The leader can change between rounds, so what is already raised comes from storage every time,
+        // not from whatever this instance remembers from an earlier round.
+        _tracker.Restore(await db.GetActiveAlertKeysAsync(AlertKind.NoData, ct));
 
         var silent = await db.GetSilentSeriesAsync(timeout, ct);
         var result = _tracker.Evaluate(silent, DateTimeOffset.UtcNow);
