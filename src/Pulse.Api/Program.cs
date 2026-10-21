@@ -24,6 +24,7 @@ builder.Services.AddSingleton(NpgsqlDataSource.Create(
 builder.Services.AddSingleton<PulseDb>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DeviceRegistry>();
+builder.Services.AddSingleton<LiveFanout>();
 
 builder.Services.AddPulseAuth();
 builder.Services.AddClaimRateLimiting();

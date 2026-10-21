@@ -124,7 +124,8 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
     /// Driven by <c>device_last_seen</c> rather than recent readings, so a silent device stays visible
     /// instead of vanishing from the list exactly when it matters.
     /// </summary>
-    public async Task<IReadOnlyList<DeviceSummary>> GetDevicesAsync(TimeSpan silentAfter, CancellationToken ct)
+    /// <param name="ownerScope">Only series of devices registered to this owner. Null means all, including devices that were never registered.</param>
+    public async Task<IReadOnlyList<DeviceSummary>> GetDevicesAsync(TimeSpan silentAfter, string? ownerScope, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<DeviceRow>(new CommandDefinition("""
@@ -141,8 +142,10 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
                 ORDER BY ts DESC
                 LIMIT 1
             ) r ON true
+            WHERE @owner::text IS NULL
+               OR EXISTS (SELECT 1 FROM devices d WHERE d.id = s.device_id AND d.owner_id = @owner)
             ORDER BY s.device_id, s.metric
-            """, new { silentAfter }, cancellationToken: ct));
+            """, new { silentAfter, owner = ownerScope }, cancellationToken: ct));
 
         // Value and Timestamp are null when the readings have aged out of retention but the series is still known.
         return rows.Select(r => new DeviceSummary(r.DeviceId, r.Metric, r.Value, r.Timestamp, r.LastSeenAt, r.Silent)).ToList();
@@ -169,13 +172,16 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         return rows.ToList();
     }
 
-    public async Task<IReadOnlyList<Alert>> GetAlertsAsync(int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<Alert>> GetAlertsAsync(int limit, string? ownerScope, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<AlertRow>(new CommandDefinition("""
             SELECT device_id AS DeviceId, metric AS Metric, rule AS Rule, value AS Value, ts AS Timestamp, state AS State, kind AS Kind
-            FROM alerts ORDER BY ts DESC LIMIT @limit
-            """, new { limit }, cancellationToken: ct));
+            FROM alerts
+            WHERE @owner::text IS NULL
+               OR EXISTS (SELECT 1 FROM devices d WHERE d.id = alerts.device_id AND d.owner_id = @owner)
+            ORDER BY ts DESC LIMIT @limit
+            """, new { limit, owner = ownerScope }, cancellationToken: ct));
         return rows.Select(r => new Alert(
             r.DeviceId, r.Metric, r.Rule, r.Value, r.Timestamp, Enum.Parse<AlertState>(r.State), Enum.Parse<AlertKind>(r.Kind))).ToList();
     }
