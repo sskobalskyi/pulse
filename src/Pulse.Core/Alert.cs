@@ -29,4 +29,10 @@ public sealed record Alert(
     double Value,
     DateTimeOffset Timestamp,
     AlertState State = AlertState.Raised,
-    AlertKind Kind = AlertKind.Threshold);
+    AlertKind Kind = AlertKind.Threshold,
+    string? Channel = null)
+{
+    /// <summary>The channel this is about. A channel nobody named is the one named after the metric.</summary>
+    [JsonIgnore]
+    public string ChannelId => string.IsNullOrWhiteSpace(Channel) ? Metric : Channel;
+}

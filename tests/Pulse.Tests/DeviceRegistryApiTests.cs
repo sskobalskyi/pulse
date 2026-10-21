@@ -18,10 +18,10 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
 
     /// <summary>Operations that exist in the contract and are implemented. Keep in step with the endpoints.</summary>
     private static readonly string[] Implemented =
-        ["listDevices", "registerDevice", "getDevice", "markShipped", "claimDevice", "retireDevice", "calibrateChannel"];
+        ["listDevices", "registerDevice", "getDevice", "markShipped", "claimDevice", "retireDevice", "calibrateChannel", "getSeries"];
 
     /// <summary>Operations of the contract that later changes will implement. Listing them keeps the gap visible.</summary>
-    private static readonly string[] NotYet = ["getRules", "setRules", "sendCommand", "listCommands", "getCommand", "getSeries"];
+    private static readonly string[] NotYet = ["getRules", "setRules", "sendCommand", "listCommands", "getCommand"];
 
     private static string ContractPath()
     {
@@ -130,6 +130,15 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         using var calibrateMissing = await stack.Client.PutAsJsonAsync(Url($"/devices/{id}/channels/nope/calibration"), new { dryRaw = 1, wetRaw = 2 });
         Assert.Equal(HttpStatusCode.NotFound, calibrateMissing.StatusCode);
         await Contract.Verify(calibrateMissing, "PUT", "/devices/{deviceId}/channels/{channelId}/calibration");
+
+        // getSeries: 200, and 404 for a channel the device does not have
+        var from = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-1).ToString("o"));
+        using var series = await stack.Client.GetAsync(Url($"/devices/{id}/channels/soil-1/series?from={from}"));
+        Assert.Equal(HttpStatusCode.OK, series.StatusCode);
+        await Contract.Verify(series, "GET", "/devices/{deviceId}/channels/{channelId}/series");
+        using var seriesMissing = await stack.Client.GetAsync(Url($"/devices/{id}/channels/nope/series?from={from}"));
+        Assert.Equal(HttpStatusCode.NotFound, seriesMissing.StatusCode);
+        await Contract.Verify(seriesMissing, "GET", "/devices/{deviceId}/channels/{channelId}/series");
 
         // retireDevice: 200 and 404
         using var retired = await Post($"/devices/{id}/retire");

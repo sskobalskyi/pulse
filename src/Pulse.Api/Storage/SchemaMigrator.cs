@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Npgsql;
 
 namespace Pulse.Api.Storage;
@@ -12,6 +13,10 @@ namespace Pulse.Api.Storage;
 /// Scripts run as written, without a wrapping transaction, because TimescaleDB statements such as creating a
 /// continuous aggregate cannot run inside one. A script that does not need that should wrap itself in
 /// BEGIN and COMMIT so a failure leaves nothing half applied.
+///
+/// A line that reads <c>-- split</c> ends one command and starts the next. Most scripts do not need it. It exists for
+/// statements TimescaleDB refuses to run together with others, such as <c>refresh_continuous_aggregate</c>, which
+/// fails inside the single round trip a multi-statement command is sent in.
 /// </remarks>
 public sealed class SchemaMigrator(NpgsqlDataSource dataSource, ILogger<SchemaMigrator> logger)
 {
@@ -47,7 +52,7 @@ public sealed class SchemaMigrator(NpgsqlDataSource dataSource, ILogger<SchemaMi
                 if (applied.Contains(version)) continue;
 
                 logger.LogInformation("Applying migration {Version}", version);
-                await ExecuteAsync(conn, sql, ct);
+                foreach (var part in SplitParts(sql)) await ExecuteAsync(conn, part, ct);
                 await using var record = new NpgsqlCommand("INSERT INTO schema_migrations (version) VALUES (@version)", conn);
                 record.Parameters.AddWithValue("version", version);
                 await record.ExecuteNonQueryAsync(ct);
@@ -82,6 +87,10 @@ public sealed class SchemaMigrator(NpgsqlDataSource dataSource, ILogger<SchemaMi
         record.Parameters.AddWithValue("version", InitialVersion);
         await record.ExecuteNonQueryAsync(ct);
     }
+
+    /// <summary>The parts of a script, separated by lines that read <c>-- split</c>. Empty parts are dropped.</summary>
+    public static IReadOnlyList<string> SplitParts(string sql) =>
+        [.. Regex.Split(sql, @"^[ \t]*--[ \t]*split[ \t]*\r?$", RegexOptions.Multiline).Select(p => p.Trim()).Where(p => p.Length > 0)];
 
     private static IEnumerable<(string Version, string Sql)> Scripts()
     {
