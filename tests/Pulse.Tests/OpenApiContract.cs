@@ -94,6 +94,26 @@ public sealed class OpenApiContract
             $"{method} {pathTemplate} {status} does not match the schema:{Environment.NewLine}{string.Join(Environment.NewLine, errors)}{Environment.NewLine}Body: {body}");
     }
 
+    /// <summary>
+    /// Checks a request body against the schema the contract documents for the operation. Returns what is wrong, empty if it fits.
+    /// This is how a test can say that a client following the contract would be accepted, or refused, the way the API does.
+    /// </summary>
+    public IReadOnlyList<string> ValidateRequest(string method, string pathTemplate, object body)
+    {
+        var operation = _document["paths"]![pathTemplate]?[method.ToLowerInvariant()]
+            ?? throw new Xunit.Sdk.XunitException($"{method} {pathTemplate} is not in the contract");
+        var schemaNode = operation["requestBody"]?["content"]?["application/json"]?["schema"]
+            ?? throw new Xunit.Sdk.XunitException($"{method} {pathTemplate} documents no JSON request body");
+
+        var schema = JsonSchema.FromText(PointAtDefinitions(schemaNode.DeepClone()).ToJsonString(), _buildOptions);
+        var instance = JsonSerializer.SerializeToElement(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var result = schema.Evaluate(instance, new EvaluationOptions { OutputFormat = OutputFormat.List, RequireFormatValidation = true });
+
+        return result.IsValid
+            ? []
+            : [.. (result.Details ?? []).Where(d => d.Errors is { Count: > 0 }).SelectMany(d => d.Errors!.Select(e => $"{d.InstanceLocation}: {e.Value}")).Distinct()];
+    }
+
     // A response may be a reference to '#/components/responses/X'.
     private JsonObject Resolve(JsonObject node)
     {

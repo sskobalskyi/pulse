@@ -93,6 +93,9 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         await Contract.Verify(missing, "GET", "/devices/{deviceId}");
         using var list = await stack.Client.GetAsync(Url("/devices?state=allocated"));
         await Contract.Verify(list, "GET", "/devices");
+        using var badFilter = await stack.Client.GetAsync(Url("/devices?state=sleeping"));
+        Assert.Equal(HttpStatusCode.BadRequest, badFilter.StatusCode);
+        await Contract.Verify(badFilter, "GET", "/devices");
 
         // markShipped: 200, 404, 409
         using var shipped = await Post($"/devices/{id}/ship");
@@ -102,6 +105,9 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         await Contract.Verify(shipUnknown, "POST", "/devices/{deviceId}/ship");
 
         // claimDevice: 409 for a wrong token, 200, then 409 again because the token works once, 404
+        using var noToken = await Post($"/devices/{id}/claim", new { ownerId = "user-1" });
+        Assert.Equal(HttpStatusCode.BadRequest, noToken.StatusCode);
+        await Contract.Verify(noToken, "POST", "/devices/{deviceId}/claim");
         using var wrongToken = await Post($"/devices/{id}/claim", new { token = "not-it", ownerId = "user-1" });
         Assert.Equal(HttpStatusCode.Conflict, wrongToken.StatusCode);
         await Contract.Verify(wrongToken, "POST", "/devices/{deviceId}/claim");
@@ -114,8 +120,7 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         Assert.Equal(HttpStatusCode.NotFound, claimUnknown.StatusCode);
         await Contract.Verify(claimUnknown, "POST", "/devices/{deviceId}/claim");
 
-        // The claim limit is documented as 429. It is 5 attempts a minute per device, and 3 were made on this one above.
-        using var fourth = await Post($"/devices/{id}/claim", new { token = "x", ownerId = "u" });
+        // The claim limit is documented as 429. It is 5 attempts a minute per device, and 4 were made on this one above.
         using var fifth = await Post($"/devices/{id}/claim", new { token = "x", ownerId = "u" });
         using var sixth = await Post($"/devices/{id}/claim", new { token = "x", ownerId = "u" });
         Assert.Equal(HttpStatusCode.Conflict, fifth.StatusCode);
@@ -127,6 +132,9 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         using var calibrated = await stack.Client.PutAsJsonAsync(Url($"/devices/{id}/channels/soil-1/calibration"), new { dryRaw = 820.5, wetRaw = 310 });
         Assert.Equal(HttpStatusCode.OK, calibrated.StatusCode);
         await Contract.Verify(calibrated, "PUT", "/devices/{deviceId}/channels/{channelId}/calibration");
+        using var calibrateBad = await stack.Client.PutAsJsonAsync(Url($"/devices/{id}/channels/soil-1/calibration"), new { dryRaw = 5, wetRaw = 5 });
+        Assert.Equal(HttpStatusCode.BadRequest, calibrateBad.StatusCode);
+        await Contract.Verify(calibrateBad, "PUT", "/devices/{deviceId}/channels/{channelId}/calibration");
         using var calibrateMissing = await stack.Client.PutAsJsonAsync(Url($"/devices/{id}/channels/nope/calibration"), new { dryRaw = 1, wetRaw = 2 });
         Assert.Equal(HttpStatusCode.NotFound, calibrateMissing.StatusCode);
         await Contract.Verify(calibrateMissing, "PUT", "/devices/{deviceId}/channels/{channelId}/calibration");
