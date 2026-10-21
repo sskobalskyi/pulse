@@ -122,16 +122,24 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    /// <summary>Channels whose last reading arrived longer ago than <paramref name="timeout"/>.</summary>
+    /// <summary>
+    /// Channels whose last reading arrived longer ago than <paramref name="timeout"/>, or than the timeout of a
+    /// no-data rule of the channel's own when it has one.
+    /// </summary>
     public async Task<IReadOnlyList<SilentSeries>> GetSilentSeriesAsync(TimeSpan timeout, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<SilentRow>(new CommandDefinition("""
-            SELECT device_id AS DeviceId, channel AS Channel, metric AS Metric, extract(epoch FROM now() - last_seen_at) AS SilentSeconds
-            FROM device_last_seen
-            WHERE last_seen_at < now() - @timeout
+            SELECT s.device_id AS DeviceId, s.channel AS Channel, s.metric AS Metric,
+                   extract(epoch FROM now() - s.last_seen_at) AS SilentSeconds,
+                   r.timeout_seconds AS TimeoutSeconds
+            FROM device_last_seen s
+            LEFT JOIN device_rules r ON r.device_id = s.device_id AND r.channel_id = s.channel AND r.kind = 'no_data'
+            WHERE s.last_seen_at < now() - COALESCE(make_interval(secs => r.timeout_seconds), @timeout)
             """, new { timeout }, cancellationToken: ct));
-        return rows.Select(r => new SilentSeries(r.DeviceId, r.Metric, TimeSpan.FromSeconds(r.SilentSeconds), r.Channel)).ToList();
+        return rows.Select(r => new SilentSeries(
+            r.DeviceId, r.Metric, TimeSpan.FromSeconds(r.SilentSeconds), r.Channel,
+            r.TimeoutSeconds is { } own ? TimeSpan.FromSeconds(own) : null)).ToList();
     }
 
     /// <summary>
@@ -270,6 +278,7 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         public string Channel { get; set; } = "";
         public string Metric { get; set; } = "";
         public double SilentSeconds { get; set; }
+        public int? TimeoutSeconds { get; set; }
     }
 
     private sealed class DeviceRow

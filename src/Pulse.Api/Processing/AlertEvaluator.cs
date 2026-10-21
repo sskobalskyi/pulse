@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Pulse.Api.Hubs;
 using Pulse.Api.Messaging;
 using Pulse.Api.Observability;
+using Pulse.Api.Registry;
 using Pulse.Api.Storage;
 using Pulse.Core;
 
@@ -18,6 +19,7 @@ public sealed class AlertEvaluator(
     IOptions<AlertRulesOptions> rules,
     PulseDb db,
     LiveFanout fanout,
+    DeviceRuleStore ruleStore,
     ILogger<AlertEvaluator> logger) : ReadingsConsumer(options, logger)
 {
     private readonly AlertTracker _tracker = new();
@@ -33,7 +35,9 @@ public sealed class AlertEvaluator(
             _restored = true;
         }
 
-        var result = _tracker.Evaluate(batch, rules.Value.Rules);
+        // The rules of a device are read for every batch, so a change applies to the very next reading.
+        var custom = await ruleStore.ThresholdsForAsync(batch.Select(r => r.DeviceId).Distinct().ToArray(), ct);
+        var result = _tracker.Evaluate(batch, new EffectiveRules(rules.Value.Rules, custom).For);
         if (result.Alerts.Count > 0)
         {
             await db.InsertAlertsAsync(result.Alerts, ct);

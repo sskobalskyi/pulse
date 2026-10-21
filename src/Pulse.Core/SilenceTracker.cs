@@ -1,7 +1,8 @@
 namespace Pulse.Core;
 
 /// <summary>A channel of a device that has not reported for longer than the timeout.</summary>
-public sealed record SilentSeries(string DeviceId, string Metric, TimeSpan SilentFor, string Channel)
+/// <param name="Timeout">The timeout of a rule of its own, or null when the platform default applies.</param>
+public sealed record SilentSeries(string DeviceId, string Metric, TimeSpan SilentFor, string Channel, TimeSpan? Timeout = null)
 {
     /// <summary>For the common case of a channel named after its metric.</summary>
     public SilentSeries(string deviceId, string metric, TimeSpan silentFor) : this(deviceId, metric, silentFor, metric)
@@ -20,7 +21,10 @@ public sealed class SilenceTracker(TimeSpan timeout)
 {
     private HashSet<AlertKey> _active = [];
 
-    public string RuleName => $"no data for {timeout.TotalSeconds:0}s";
+    /// <summary>The rule name for the platform default timeout.</summary>
+    public string RuleName => NameFor(timeout);
+
+    public static string NameFor(TimeSpan timeout) => $"no data for {timeout.TotalSeconds:0}s";
 
     /// <summary>Replaces the state, e.g. with the no-data alerts still raised according to storage after a restart.</summary>
     public void Restore(IEnumerable<AlertKey> active) => _active = [.. active];
@@ -33,7 +37,7 @@ public sealed class SilenceTracker(TimeSpan timeout)
 
         foreach (var series in silent)
         {
-            var key = new AlertKey(series.DeviceId, series.Metric, RuleName, series.Channel);
+            var key = new AlertKey(series.DeviceId, series.Metric, series.Timeout is { } own ? NameFor(own) : RuleName, series.Channel);
             silentKeys.Add(key);
 
             if (next.Add(key))
