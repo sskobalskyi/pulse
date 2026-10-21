@@ -2,15 +2,46 @@ using System.Text.Json.Serialization;
 
 namespace Pulse.Core;
 
-/// <summary>The metrics the platform knows about, including the safety sensors of an automated rig.</summary>
+/// <summary>A metric the platform knows, with the unit it is measured in and the range a real sensor can produce.</summary>
+public sealed record MetricSpec(string Name, string Unit, double Min, double Max);
+
+/// <summary>
+/// The metrics the platform knows about, including the safety sensors of an automated rig. A reading of a known metric
+/// outside its range is a faulty sensor or a unit mix-up, and is refused rather than stored. Metrics outside the
+/// catalog are not validated: they are accepted as they always were.
+/// </summary>
 public static class MetricCatalog
 {
-    public static readonly IReadOnlySet<string> Names = new HashSet<string>(StringComparer.Ordinal)
+    private static readonly Dictionary<string, MetricSpec> Specs = new MetricSpec[]
     {
-        "temperature", "air_humidity", "soil_moisture", "ph", "light", "airflow", "tank_level", "overflow", "flow",
-    };
+        new("temperature", "°C", -55, 125),
+        new("air_humidity", "%", 0, 100),
+        new("soil_moisture", "%", 0, 100),
+        new("ph", "pH", 0, 14),
+        new("light", "lx", 0, 200_000),
+        new("airflow", "m/s", 0, 60),
+        new("tank_level", "%", 0, 100),
+        new("overflow", "", 0, 1), // a flag: 0 dry, 1 water at the overflow sensor
+        new("flow", "L/min", 0, 100),
+    }.ToDictionary(s => s.Name, StringComparer.Ordinal);
 
-    public static bool IsKnown(string? metric) => metric is not null && Names.Contains(metric);
+    public static readonly IReadOnlySet<string> Names = new HashSet<string>(Specs.Keys, StringComparer.Ordinal);
+
+    public static bool IsKnown(string? metric) => metric is not null && Specs.ContainsKey(metric);
+
+    public static MetricSpec? Find(string? metric) => metric is not null && Specs.TryGetValue(metric, out var spec) ? spec : null;
+
+    /// <summary>
+    /// Null if the value is plausible for the metric, or if the metric is not in the catalog.
+    /// Otherwise a sentence saying what is wrong.
+    /// </summary>
+    public static string? Validate(string metric, double value)
+    {
+        var spec = Find(metric);
+        if (spec is null || (value >= spec.Min && value <= spec.Max)) return null;
+
+        return $"{metric} must be between {spec.Min:0.##} and {spec.Max:0.##} {spec.Unit}".TrimEnd() + $", got {value:0.##}";
+    }
 }
 
 public static class ActuatorKinds

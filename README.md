@@ -15,6 +15,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Time-series modelling:** TimescaleDB hypertable, a 1-minute continuous aggregate, a 7-day retention policy on raw data. Short chart windows read raw rows, longer ones read the aggregate.
 - **Real-time push:** SignalR hub with a throttled client store (state lives in refs and is published to React at most every 250 ms).
 - **Observability:** OpenTelemetry traces across HTTP and Kafka (context in message headers, span links for batches), metrics including per-partition consumer lag, and correlated logs. See [Observability](#observability).
+- **Channels:** a series is a device, a metric and a channel, so one device can have several sensors of the same kind (a soil moisture sensor per zone). Alerts, no-data detection and charts work per channel. Readings of known metrics are checked against a plausible range, and a registered device's readings must fit the channels it declared. See [Channels and metrics](#channels-and-metrics).
 - **Device registry:** devices are registered before they send data and move through `allocated`, `shipped`, `claimed`, `active`, `retired`. Claiming uses a one-time, expiring token that is stored only as a hash and is rate limited. Retiring a device stops its no-data alerts. See [Device registry and authentication](#device-registry-and-authentication).
 - **Authentication:** Keycloak JWTs behind a switch. Service callers manage the registry, users see only the devices they own.
 - **Schema migrations:** plain SQL files applied by the API on startup, with an existing database adopted rather than rebuilt ([ADR 0002](docs/adr/0002-sql-migrations-on-startup.md)).
@@ -110,10 +111,53 @@ stateDiagram-v2
 | `POST /devices/{id}/claim` | service | Binds it to `ownerId`. Needs the one-time token, which works once and expires. At most 5 attempts a minute per device and 30 per caller, then 429 with `Retry-After`. |
 | `POST /devices/{id}/retire` | service | Stops its no-data alerts, erases an unused token, refuses its telemetry (409). |
 | `GET /devices`, `GET /devices/{id}` | user or service | A user sees only their own devices. A device that is not theirs answers 404. |
-| `PUT /devices/{id}/channels/{channelId}/calibration` | user or service | Stores the dry and wet raw values of a channel. |
+| `PUT /devices/{id}/channels/{channelId}/calibration` | user or service | Stores the dry and wet raw values of a channel. They are stored, not yet applied to readings. |
+| `GET /devices/{id}/channels/{channelId}/series` | user or service | Points of one channel, see [Channels and metrics](#channels-and-metrics). |
 
 Errors are `application/problem+json` with a stable `code` (`invalid_state`, `token_invalid`, `token_expired`, `rate_limited`,
-`validation_failed`, ...) to switch on. Rules, commands and series from the same contract are not implemented yet.
+`validation_failed`, ...) to switch on. Rules and commands from the same contract are not implemented yet.
+
+### Channels and metrics
+
+A device declares its **channels** when it is registered: each has an id and a metric. A reading names its channel, and
+everything downstream (storage, the 1-minute aggregate, alerts, no-data detection, charts) is keyed by device and channel.
+
+```json
+{ "deviceId": "ghx-0001", "channel": "soil-2", "metric": "soil_moisture", "value": 47.5, "timestamp": "2026-10-21T12:00:00Z" }
+```
+
+- A reading that names no channel is on the channel called after its metric. That keeps the demo simulator, and any sender that
+  never heard of channels, working unchanged, and it is what a device with one sensor per metric can rely on.
+- For a **registered** device the reading has to fit what it declared. Without a channel it goes to the only channel of its metric;
+  if there are two soil moisture channels it must say which (`ambiguous_channel`). A channel the device does not have is
+  `unknown_channel`, and a channel used for another metric is `metric_mismatch`. One bad reading refuses the whole batch, and none of it is stored.
+- A device nobody registered declared nothing, so its readings are accepted as they come.
+
+Readings of the platform's metrics are checked against the range a real sensor can produce. A pH of 70 or a soil moisture of
+4095 is a faulty sensor or a unit mix-up, and is refused with `value_out_of_range` instead of poisoning charts and alerts.
+Metrics outside the list (the demo's `humidity` and `battery`) are not judged.
+
+| Metric | Unit | Range |
+| --- | --- | --- |
+| `temperature` | °C | -55 to 125 |
+| `air_humidity`, `soil_moisture`, `tank_level` | % | 0 to 100 |
+| `ph` | pH | 0 to 14 |
+| `light` | lx | 0 to 200 000 |
+| `airflow` | m/s | 0 to 60 |
+| `flow` | L/min | 0 to 100 |
+| `overflow` | flag | 0 or 1 |
+
+**Series.** `GET /api/pulse/v2/devices/{id}/channels/{channel}/series?from=...&to=...&resolution=raw|1m|1h` returns points in ascending time.
+`from` is required and `to` defaults to now. Each resolution has a longest window, so one request cannot ask for millions of points:
+
+| Resolution | Source | Longest window | Point |
+| --- | --- | --- | --- |
+| `raw` (default) | the readings | 6 hours, at most 10 000 points | `ts`, `value` |
+| `1m` | the 1-minute aggregate | 7 days | `ts`, `value` (average), `min`, `max` |
+| `1h` | the 1-minute aggregate | 365 days | `ts`, `value` (average weighted by readings per minute), `min`, `max` |
+
+A raw series that hit the point limit carries the latest points and the header `X-Pulse-Truncated: true`. A user sees the
+series of their own devices only, like everything else.
 
 ### Running with authentication
 
@@ -197,6 +241,9 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 - Delivery is at-least-once, so a batch can be redelivered. Writes are idempotent: a reading is identified by `(device_id, metric, ts)` and alerts by `(device_id, metric, rule, ts, state)`, both enforced by unique indexes and `ON CONFLICT DO NOTHING`. The catch is that two genuinely different values for the same device, metric and timestamp collapse into the first one. Live SignalR pushes are not deduplicated, so a redelivery can briefly repeat a point in an open browser.
 - With authentication on, the dashboard endpoints (`/api/devices`, `/api/alerts`, series) and the live hub are scoped to the caller's devices like the registry is. A device nobody has claimed, including every device of the demo simulator, is visible to service callers only. The live push looks up the owners of each batch, so it costs one indexed query per batch.
 - Claim attempt counters are in memory of one instance, so with several instances the real limit is multiplied by their number.
+- Ingestion does more per request now: a retired check and a declared-channels lookup, two small indexed queries per batch. Measured with the k6 smoke test, the ingest p95 went from about 12 ms to about 14 ms.
+- Calibration is stored but not applied: a soil moisture sensor has to send percentages, not raw ADC counts, or the range check will refuse it.
+- The dashboard shows one button per metric, so two channels of one metric on the same device are drawn as one until the dashboard learns about channels. The API and storage already keep them apart.
 - Telemetry for a device that was never registered is still accepted, so the standalone demo works as before. The registry does not gate ingestion, except that a retired device is refused.
 
 ## Layout

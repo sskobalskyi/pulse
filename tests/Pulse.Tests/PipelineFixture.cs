@@ -43,6 +43,9 @@ public sealed class PipelineFixture : IAsyncLifetime
 
     public HttpClient Client { get; private set; } = null!;
 
+    /// <summary>For tests that need to reach the database directly, for example to refresh the aggregate instead of waiting for its job.</summary>
+    public string DatabaseConnectionString => _timescale.GetConnectionString();
+
     public async Task InitializeAsync()
     {
         await Task.WhenAll(_redpanda.StartAsync(), _timescale.StartAsync());

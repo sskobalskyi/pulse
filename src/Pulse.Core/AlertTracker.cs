@@ -26,11 +26,11 @@ public sealed class AlertTracker
                 var verdict = rule.Classify(reading);
                 if (verdict is RuleVerdict.NotApplicable or RuleVerdict.Hold) continue;
 
-                var key = new AlertKey(reading.DeviceId, reading.Metric, rule.Name);
+                var key = new AlertKey(reading.DeviceId, reading.Metric, rule.Name, reading.ChannelId);
                 if (verdict == RuleVerdict.Breach && next.Add(key))
-                    alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Raised));
+                    alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Raised, Channel: key.Channel));
                 else if (verdict == RuleVerdict.Clear && next.Remove(key))
-                    alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Resolved));
+                    alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Resolved, Channel: key.Channel));
             }
         }
 
@@ -38,7 +38,17 @@ public sealed class AlertTracker
     }
 }
 
-public sealed record AlertKey(string DeviceId, string Metric, string Rule);
+/// <summary>
+/// What an alert is about: one rule on one channel of one device. The metric rides along because it is what a person
+/// recognises, and is determined by the channel.
+/// </summary>
+public sealed record AlertKey(string DeviceId, string Metric, string Rule, string Channel)
+{
+    /// <summary>For the common case of a channel named after its metric.</summary>
+    public AlertKey(string deviceId, string metric, string rule) : this(deviceId, metric, rule, metric)
+    {
+    }
+}
 
 public sealed class AlertBatch(IReadOnlyList<Alert> alerts, Action commit)
 {

@@ -258,6 +258,38 @@ public sealed class DeviceRegistry(
         return owners;
     }
 
+    /// <summary>
+    /// The channels each of these devices declared. A device that was never registered is not in the result, which is how
+    /// its readings are told apart from a registered device's: the first are taken as they come, the second must fit.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyList<ChannelRef>>> DeclaredChannelsAsync(
+        IReadOnlyCollection<string> deviceIds, CancellationToken ct)
+    {
+        var declared = new Dictionary<string, IReadOnlyList<ChannelRef>>(StringComparer.Ordinal);
+        if (deviceIds.Count == 0) return declared;
+
+        await using var cmd = dataSource.CreateCommand("""
+            SELECT d.id, c.channel_id, c.metric
+            FROM devices d
+            LEFT JOIN device_channels c ON c.device_id = d.id
+            WHERE d.id = ANY(@ids)
+            ORDER BY d.id, c.position
+            """);
+        cmd.Parameters.AddWithValue("ids", deviceIds.ToArray());
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+
+        var lists = new Dictionary<string, List<ChannelRef>>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(ct))
+        {
+            var id = reader.GetString(0);
+            if (!lists.TryGetValue(id, out var list)) lists[id] = list = [];
+            if (!reader.IsDBNull(1)) list.Add(new ChannelRef(reader.GetString(1), reader.GetString(2)));
+        }
+
+        foreach (var (id, list) in lists) declared[id] = list;
+        return declared;
+    }
+
     /// <summary>Which of these devices are retired. Used to refuse their data.</summary>
     public async Task<IReadOnlySet<string>> RetiredAmongAsync(IReadOnlyCollection<string> deviceIds, CancellationToken ct)
     {

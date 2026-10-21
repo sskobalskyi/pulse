@@ -135,6 +135,31 @@ public sealed class OwnerScopingTests : IDisposable
     }
 
     [Fact]
+    public async Task The_channel_series_of_the_registry_api_follows_the_same_rule()
+    {
+        var alice = OwnerName("alice");
+        var aliceDevice = await DeviceOwnedBy(alice);
+        var bobDevice = await DeviceOwnedBy(OwnerName("bob"));
+        var strayDevice = NewId(); // never registered
+        var from = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddHours(-1).ToString("o"));
+        string Series(string id, string channel = "soil-1") => $"/api/pulse/v2/devices/{id}/channels/{channel}/series?from={from}";
+
+        using var own = await Send(HttpMethod.Get, Series(aliceDevice), Token(alice));
+        using var ownUnknownChannel = await Send(HttpMethod.Get, Series(aliceDevice, "nope"), Token(alice));
+        using var theirs = await Send(HttpMethod.Get, Series(bobDevice), Token(alice));
+        using var stray = await Send(HttpMethod.Get, Series(strayDevice), Token(alice));
+        using var strayAsService = await Send(HttpMethod.Get, Series(strayDevice), ServiceToken());
+        using var theirsAsService = await Send(HttpMethod.Get, Series(bobDevice), ServiceToken());
+
+        Assert.Equal(HttpStatusCode.OK, own.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, ownUnknownChannel.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, theirs.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, stray.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, strayAsService.StatusCode); // a service may read a series nobody registered
+        Assert.Equal(HttpStatusCode.OK, theirsAsService.StatusCode);
+    }
+
+    [Fact]
     public async Task Live_readings_reach_only_the_owner_and_services()
     {
         var alice = OwnerName("alice");
