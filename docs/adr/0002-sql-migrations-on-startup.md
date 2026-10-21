@@ -17,6 +17,9 @@ same schema as the real stack, not a copy that can drift.
 - A Postgres advisory lock serialises several instances starting at once, so each script runs exactly once.
 - Scripts run as written, **without** a wrapping transaction. TimescaleDB statements such as a continuous aggregate
   cannot run inside one. A script that does not need that wraps itself in `BEGIN` and `COMMIT`, as 0002 does.
+- A line that reads `-- split` ends one command and starts the next. A multi-statement command goes to the database in a
+  single round trip, and TimescaleDB refuses some calls inside it (`refresh_continuous_aggregate` is one), so a script
+  that needs them marks where the commands break. Most scripts never use it.
 - A database created by the old init script is **adopted**: `0001_initial` is recorded as applied instead of run
   again, and only the newer scripts run. A database older than that is refused with the instruction to recreate it.
 - The tests use the same `SchemaMigrator`, so they run against exactly what the API creates.
