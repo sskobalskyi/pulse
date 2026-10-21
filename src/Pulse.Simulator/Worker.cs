@@ -9,6 +9,10 @@ namespace Pulse.Simulator;
 public sealed class SimulatorOptions
 {
     public string ApiUrl { get; set; } = "http://localhost:5080";
+
+    /// <summary>Credentials for an API that requires authentication. Left empty, the simulator sends no token.</summary>
+    public SimulatorAuthOptions Auth { get; set; } = new();
+
     public int Devices { get; set; } = 20;
     public int IntervalMs { get; set; } = 1000;
 
@@ -28,7 +32,7 @@ public sealed class SimulatorOptions
 }
 
 /// <summary>Emits a random-walk reading per device and metric every interval, as one batch per tick.</summary>
-public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOptions> options, ILogger<Worker> logger) : BackgroundService
+public sealed class Worker(IHttpClientFactory httpFactory, TokenProvider tokens, IOptions<SimulatorOptions> options, ILogger<Worker> logger) : BackgroundService
 {
     public const string TelemetryName = "Pulse.Simulator";
 
@@ -98,7 +102,10 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
 
             try
             {
-                using var response = await http.PostAsJsonAsync($"{o.ApiUrl}/api/telemetry", batch, stoppingToken);
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"{o.ApiUrl}/api/telemetry") { Content = JsonContent.Create(batch) };
+                if (await tokens.GetAsync(stoppingToken) is { } token) request.Headers.Authorization = new("Bearer", token);
+
+                using var response = await http.SendAsync(request, stoppingToken);
                 response.EnsureSuccessStatusCode();
                 ReadingsSent.Add(batch.Count);
             }
@@ -106,7 +113,7 @@ public sealed class Worker(IHttpClientFactory httpFactory, IOptions<SimulatorOpt
             {
                 SendFailures.Add(1);
                 activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                logger.LogWarning("Ingestion API unavailable: {Message}", ex.Message);
+                logger.LogWarning("Could not send readings, the API or the identity provider is unavailable: {Message}", ex.Message);
             }
         }
     }

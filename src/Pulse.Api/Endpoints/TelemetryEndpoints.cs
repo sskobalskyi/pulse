@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using Confluent.Kafka;
 using Microsoft.Extensions.Options;
+using Pulse.Api.Auth;
 using Pulse.Api.Observability;
 using Pulse.Api.Processing;
+using Pulse.Api.Registry;
 using Pulse.Api.Storage;
 using Pulse.Core;
 
@@ -17,16 +19,21 @@ public static class TelemetryEndpoints
     {
         var api = app.MapGroup("/api");
 
-        api.MapPost("/telemetry", IngestAsync);
-        api.MapGet("/devices", async (PulseDb db, IOptions<SilenceOptions> silence, CancellationToken ct) =>
+        // Sending data is for service callers (the simulator, the MQTT bridge). Everything stays open while authentication is off.
+        api.MapPost("/telemetry", IngestAsync).RequireAuthorization(Policies.Service);
+
+        // Reading needs a caller. These endpoints do not yet limit a user to their own devices, which is the next change.
+        var reads = api.MapGroup("").RequireAuthorization(Policies.Caller);
+        reads.MapGet("/devices", async (PulseDb db, IOptions<SilenceOptions> silence, CancellationToken ct) =>
             Results.Ok(await db.GetDevicesAsync(silence.Value.Timeout, ct)));
-        api.MapGet("/devices/{deviceId}/series", async (string deviceId, string metric, int? minutes, PulseDb db, CancellationToken ct) =>
+        reads.MapGet("/devices/{deviceId}/series", async (string deviceId, string metric, int? minutes, PulseDb db, CancellationToken ct) =>
             Results.Ok(await db.GetSeriesAsync(deviceId, metric, TimeSpan.FromMinutes(Math.Clamp(minutes ?? 10, 1, 24 * 60)), ct)));
-        api.MapGet("/alerts", async (int? limit, PulseDb db, CancellationToken ct) =>
+        reads.MapGet("/alerts", async (int? limit, PulseDb db, CancellationToken ct) =>
             Results.Ok(await db.GetAlertsAsync(Math.Clamp(limit ?? 50, 1, 500), ct)));
     }
 
-    private static async Task<IResult> IngestAsync(TelemetryReading[] readings, IProducer<string, string> producer, CancellationToken ct)
+    private static async Task<IResult> IngestAsync(
+        TelemetryReading[] readings, IProducer<string, string> producer, DeviceRegistry registry, CancellationToken ct)
     {
         if (readings.Length is 0 or > MaxBatch)
         {
@@ -38,6 +45,14 @@ public static class TelemetryEndpoints
         {
             PulseTelemetry.BatchesRejected.Add(1, new KeyValuePair<string, object?>("reason", "invalid"));
             return Results.Problem("Every reading needs a device id, a metric and a finite value.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // A retired device is out of service for good: its data is refused rather than quietly stored.
+        var retired = await registry.RetiredAmongAsync(readings.Select(r => r.DeviceId).Distinct().ToArray(), ct);
+        if (retired.Count > 0)
+        {
+            PulseTelemetry.BatchesRejected.Add(1, new KeyValuePair<string, object?>("reason", "retired"));
+            return ApiProblems.Problem(StatusCodes.Status409Conflict, "device_retired", "The batch contains a retired device.", string.Join(", ", retired.Order()));
         }
 
         using var activity = PulseTelemetry.Source.StartActivity($"{Topics.Readings} publish", ActivityKind.Producer);

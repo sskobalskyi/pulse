@@ -1,0 +1,39 @@
+# Turns authentication on and adds a Keycloak with a small `pulse` realm:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build
+#
+# Keycloak: http://localhost:8180 (admin / admin). Users alice and bob (password = their name) are ordinary users.
+# The client `pulse-service` (secret `pulse-dev-secret`) is a service caller. Local use only, none of this is a secret.
+# The dashboard has no login yet, so with authentication on it shows nothing: use the API with a token (see the README).
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Tokens carry the public address, even when the API fetches the discovery document through the service name.
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./auth/pulse-realm.json:/opt/keycloak/data/import/pulse-realm.json:ro
+
+  api:
+    environment:
+      Auth__Enabled: "true"
+      Auth__Authority: http://keycloak:8080/realms/pulse
+      Auth__Issuer: http://localhost:8180/realms/pulse
+      Auth__RequireHttpsMetadata: "false"
+    depends_on:
+      - keycloak
+
+  simulator:
+    environment:
+      Simulator__Auth__TokenUrl: http://keycloak:8080/realms/pulse/protocol/openid-connect/token
+      Simulator__Auth__ClientId: pulse-service
+      Simulator__Auth__ClientSecret: pulse-dev-secret
+    depends_on:
+      - keycloak

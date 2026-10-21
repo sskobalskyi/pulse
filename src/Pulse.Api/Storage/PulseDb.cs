@@ -96,7 +96,9 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var cmd = new NpgsqlCommand("""
             INSERT INTO device_last_seen (device_id, metric, last_seen_at)
-            SELECT device_id, metric, now() FROM unnest(@deviceIds, @metrics) AS s(device_id, metric)
+            SELECT s.device_id, s.metric, now() FROM unnest(@deviceIds, @metrics) AS s(device_id, metric)
+            -- A retired device must not come back to life as "silent forever" because old messages were still in Kafka.
+            WHERE NOT EXISTS (SELECT 1 FROM devices d WHERE d.id = s.device_id AND d.state = 'retired')
             ON CONFLICT (device_id, metric) DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
             """, conn);
 

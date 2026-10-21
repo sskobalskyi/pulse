@@ -6,6 +6,7 @@ COPY src/Pulse.Api/Pulse.Api.csproj src/Pulse.Api/
 RUN dotnet restore src/Pulse.Api/Pulse.Api.csproj
 COPY src/Pulse.Core src/Pulse.Core
 COPY src/Pulse.Api src/Pulse.Api
+COPY db/migrations db/migrations
 RUN dotnet publish src/Pulse.Api/Pulse.Api.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:9.0

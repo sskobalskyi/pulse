@@ -1,0 +1,472 @@
+openapi: 3.1.0
+info:
+  title: Pulse Device API (additions)
+  version: 0.1.0
+  summary: The device-platform surface that Greenhaus needs from Pulse.
+  description: |
+    Pulse stays a generic device platform. This contract describes only what is new: a device registry
+    with a lifecycle, channels and capabilities, per-device alert rules, a command API and a claim API.
+    It says nothing about pots or plants. The existing Pulse endpoints (telemetry ingestion, device
+    list, series, alerts) are unchanged.
+
+    A series is keyed by device, metric and channel. A device can expose several channels of one metric,
+    for example one soil-moisture channel per zone.
+
+    Service-to-service calls use a client-credentials token. Users call only the read endpoints for
+    devices they own.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8090/api/pulse/v2
+    description: Local gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: Registry
+  - name: Rules
+  - name: Commands
+  - name: Series
+paths:
+  /devices:
+    get:
+      tags: [Registry]
+      operationId: listDevices
+      summary: Devices visible to the caller
+      parameters:
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/Lifecycle' }
+        - name: ownerId
+          in: query
+          description: Service callers only
+          schema: { type: string }
+      responses:
+        '200':
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Device' }
+    post:
+      tags: [Registry]
+      operationId: registerDevice
+      summary: Register an allocated device
+      description: |
+        Service callers only. Idempotent on `deviceId`. Registers the device in state `allocated` with its
+        capability manifest and the hash of its credential, which the broker uses for authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceRegistration' }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '200':
+          description: Already registered, returned unchanged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [Registry]
+      operationId: getDevice
+      summary: One device with its channels and capabilities
+      responses:
+        '200':
+          description: The device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/{deviceId}/ship:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Registry]
+      operationId: markShipped
+      summary: Mark a device shipped, which makes it claimable
+      description: Service callers only.
+      responses:
+        '200':
+          description: The device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /devices/{deviceId}/claim:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Registry]
+      operationId: claimDevice
+      summary: Claim a shipped device for an owner
+      description: |
+        Verifies the one-time token against the stored hash, requires state `shipped` and an unexpired token,
+        and binds the device to the owner. Rate limited per device and per caller.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaimRequest' }
+      responses:
+        '200':
+          description: The claimed device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /devices/{deviceId}/retire:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Registry]
+      operationId: retireDevice
+      summary: Retire a device
+      description: A retired device no longer raises no-data alerts and its credential stops working.
+      responses:
+        '200':
+          description: The retired device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/{deviceId}/channels/{channelId}/calibration:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - $ref: '#/components/parameters/ChannelId'
+    put:
+      tags: [Registry]
+      operationId: calibrateChannel
+      summary: Store the dry and wet raw values of a sensor channel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dryRaw, wetRaw]
+              properties:
+                dryRaw: { type: number }
+                wetRaw: { type: number }
+      responses:
+        '200':
+          description: The channel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/rules:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [Rules]
+      operationId: getRules
+      summary: Alert rules of a device
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Rule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Rules]
+      operationId: setRules
+      summary: Replace the alert rules of a device
+      description: Threshold rules with a hysteresis margin, per channel. A no-data timeout can be set per channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Rule' }
+      responses:
+        '200':
+          description: The stored rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Rule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/commands:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Commands]
+      operationId: sendCommand
+      summary: Queue a command for a device
+      description: |
+        Idempotent on `commandId`. The command is persisted, handed to the MQTT bridge and published with
+        at-least-once delivery. A command that has expired is never executed by the device.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandRequest' }
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Command' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Commands]
+      operationId: listCommands
+      summary: Recent commands
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Commands, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Command' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/{deviceId}/commands/{commandId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - name: commandId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Commands]
+      operationId: getCommand
+      summary: One command with its result
+      responses:
+        '200':
+          description: The command
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Command' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/channels/{channelId}/series:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Series]
+      operationId: getSeries
+      summary: Readings of one channel
+      description: Short windows read raw rows, longer ones read the 1-minute aggregate.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: resolution
+          in: query
+          schema: { type: string, enum: [raw, 1m, 1h], default: raw }
+      responses:
+        '200':
+          description: Points in ascending time
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Point' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string }
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: The request is invalid
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Not found, or not visible to the caller
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: The request conflicts with the device state
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Rate limit exceeded
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    Problem:
+      type: object
+      required: [title, status, code]
+      properties:
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          examples: [invalid_state, token_invalid, token_expired, command_expired, device_offline]
+    Metric:
+      type: string
+      enum: [temperature, air_humidity, soil_moisture, ph, light, airflow, tank_level, overflow, flow]
+      description: The platform metrics, including the safety sensors
+    Lifecycle:
+      type: string
+      enum: [allocated, shipped, claimed, active, retired]
+    ActuatorKind:
+      type: string
+      enum: [pump, heater, lamp, fan, humidifier]
+    Channel:
+      type: object
+      required: [id, metric]
+      properties:
+        id: { type: string }
+        metric: { $ref: '#/components/schemas/Metric' }
+        label: { type: string, description: 'Free label, for example the zone the sensor sits in' }
+        unit: { type: string }
+        calibration:
+          type: object
+          properties:
+            dryRaw: { type: number }
+            wetRaw: { type: number }
+            calibratedAt: { type: string, format: date-time }
+    HardLimits:
+      type: object
+      required: [maxRunSeconds, minIntervalSeconds, dailyCapSeconds]
+      properties:
+        maxRunSeconds: { type: integer, minimum: 1 }
+        minIntervalSeconds: { type: integer, minimum: 0 }
+        dailyCapSeconds: { type: integer, minimum: 1 }
+    ActuatorCapability:
+      type: object
+      required: [id, kind, hardLimits]
+      properties:
+        id: { type: string }
+        kind: { $ref: '#/components/schemas/ActuatorKind' }
+        hardLimits: { $ref: '#/components/schemas/HardLimits' }
+        thermalCutoff:
+          type: boolean
+          description: A heater declares whether it has a hardware thermal cutoff
+    Capabilities:
+      type: object
+      required: [channels, actuators]
+      properties:
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+        actuators:
+          type: array
+          items: { $ref: '#/components/schemas/ActuatorCapability' }
+    Device:
+      type: object
+      required: [id, model, state, capabilities]
+      properties:
+        id: { type: string }
+        model: { type: string }
+        state: { $ref: '#/components/schemas/Lifecycle' }
+        ownerId: { type: [string, 'null'] }
+        connection: { type: string, enum: [online, offline, unknown] }
+        lastSeenAt: { type: [string, 'null'], format: date-time }
+        firmware: { type: string }
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+    DeviceRegistration:
+      type: object
+      required: [id, model, capabilities, credentialHash, claimTokenHash, claimTokenExpiresAt]
+      properties:
+        id: { type: string }
+        model: { type: string }
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+        credentialHash:
+          type: string
+          description: Salted hash of the device's broker password. The plaintext never travels.
+        claimTokenHash: { type: string }
+        claimTokenExpiresAt: { type: string, format: date-time }
+    ClaimRequest:
+      type: object
+      required: [token, ownerId]
+      properties:
+        token: { type: string }
+        ownerId: { type: string, description: Keycloak subject of the new owner }
+    Rule:
+      type: object
+      required: [channelId, kind]
+      properties:
+        channelId: { type: string }
+        kind: { type: string, enum: [threshold, no_data] }
+        min: { type: number }
+        max: { type: number }
+        margin: { type: number, minimum: 0 }
+        timeoutSeconds: { type: integer, minimum: 10 }
+    CommandRequest:
+      type: object
+      required: [commandId, type, actuatorId, expiresAt]
+      properties:
+        commandId: { type: string, format: uuid }
+        type: { type: string, enum: [run_actuator, stop_actuator, set_kill_switch] }
+        actuatorId: { type: string }
+        durationSeconds: { type: integer, minimum: 1 }
+        enabled: { type: boolean }
+        expiresAt:
+          type: string
+          format: date-time
+          description: After this moment the device must not execute the command
+    Command:
+      type: object
+      required: [commandId, deviceId, type, status, createdAt]
+      properties:
+        commandId: { type: string, format: uuid }
+        deviceId: { type: string }
+        type: { type: string }
+        actuatorId: { type: string }
+        status: { type: string, enum: [queued, sent, accepted, completed, rejected, failed, expired] }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+    Point:
+      type: object
+      required: [ts, value]
+      properties:
+        ts: { type: string, format: date-time }
+        value: { type: number }
+        min: { type: number }
+        max: { type: number }
