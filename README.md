@@ -15,6 +15,10 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Time-series modelling:** TimescaleDB hypertable, a 1-minute continuous aggregate, a 7-day retention policy on raw data. Short chart windows read raw rows, longer ones read the aggregate.
 - **Real-time push:** SignalR hub with a throttled client store (state lives in refs and is published to React at most every 250 ms).
 - **Observability:** OpenTelemetry traces across HTTP and Kafka (context in message headers, span links for batches), metrics including per-partition consumer lag, and correlated logs. See [Observability](#observability).
+- **Device registry:** devices are registered before they send data and move through `allocated`, `shipped`, `claimed`, `active`, `retired`. Claiming uses a one-time, expiring token that is stored only as a hash and is rate limited. Retiring a device stops its no-data alerts. See [Device registry and authentication](#device-registry-and-authentication).
+- **Authentication:** Keycloak JWTs behind a switch. Service callers manage the registry, users see only the devices they own.
+- **Schema migrations:** plain SQL files applied by the API on startup, with an existing database adopted rather than rebuilt ([ADR 0002](docs/adr/0002-sql-migrations-on-startup.md)).
+- **Contract tests:** responses are validated against `contracts/pulse-device-api.yaml`, the OpenAPI document that the rest of the system is built against.
 - **i18n:** `en` (default) and `uk`, react-i18next with browser language detection.
 - **Tests:** xUnit for the alert rules and tracker, Testcontainers tests for the database layer and for the whole backend pipeline (HTTP ingest, Kafka, stream processors, TimescaleDB and SignalR in one process against real containers), and Playwright E2E for the dashboard in both locales.
 
@@ -48,6 +52,7 @@ docker compose up --build
 
 - Dashboard: http://localhost:8080
 - API: http://localhost:5080 (`GET /health`, `GET /api/devices` (every series that ever reported, with its latest value and a `silent` flag), `GET /api/alerts`, `GET /api/devices/{id}/series?metric=temperature&minutes=5`, `POST /api/telemetry`)
+- Device registry: `http://localhost:5080/api/pulse/v2/devices` and below, see [below](#device-registry-and-authentication)
 
 ### Development
 
@@ -79,6 +84,58 @@ docker compose --profile loadtest run --rm k6  # load smoke test, needs the stac
 - **every test device shows up in `/api/devices` after the run**. The API answers 202 as soon as Kafka has the message, so a broken consumer or database would not show in request latency. With TimescaleDB stopped the ingestion checks still pass and only this one fails (0 of 20 devices delivered).
 
 Typical local result: ingest p95 about 12 ms, devices p95 about 40 ms, 20 of 20 devices delivered. The rates can be changed per run, for example `docker compose --profile loadtest run --rm -e INGEST_RATE=100 -e DURATION=60s k6`. Use `--no-deps` when the stack is already up, otherwise compose starts its dependencies too.
+
+## Device registry and authentication
+
+The registry follows [`contracts/pulse-device-api.yaml`](contracts/pulse-device-api.yaml) and lives under `/api/pulse/v2`.
+Pulse stays generic: it knows devices, channels and owners, not what they are used for.
+
+```mermaid
+stateDiagram-v2
+    [*] --> allocated: POST /devices
+    allocated --> shipped: POST /devices/{id}/ship
+    shipped --> claimed: POST /devices/{id}/claim (token)
+    claimed --> active: first reading
+    allocated --> retired: POST /devices/{id}/retire
+    shipped --> retired
+    claimed --> retired
+    active --> retired
+    retired --> [*]
+```
+
+| Operation | Who | Notes |
+| --- | --- | --- |
+| `POST /devices` | service | Registers a device with its capability manifest. Repeating it changes nothing and returns 200. |
+| `POST /devices/{id}/ship` | service | Makes it claimable. Repeating it is accepted. |
+| `POST /devices/{id}/claim` | service | Binds it to `ownerId`. Needs the one-time token, which works once and expires. At most 5 attempts a minute per device and 30 per caller, then 429 with `Retry-After`. |
+| `POST /devices/{id}/retire` | service | Stops its no-data alerts, erases an unused token, refuses its telemetry (409). |
+| `GET /devices`, `GET /devices/{id}` | user or service | A user sees only their own devices. A device that is not theirs answers 404. |
+| `PUT /devices/{id}/channels/{channelId}/calibration` | user or service | Stores the dry and wet raw values of a channel. |
+
+Errors are `application/problem+json` with a stable `code` (`invalid_state`, `token_invalid`, `token_expired`, `rate_limited`,
+`validation_failed`, ...) to switch on. Rules, commands and series from the same contract are not implemented yet.
+
+### Running with authentication
+
+Authentication is off by default, so the demo needs nothing else. To turn it on with a local Keycloak:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build
+```
+
+Keycloak is on http://localhost:8180 (admin / admin) with a `pulse` realm: users `alice` and `bob` (password equal to the name),
+and a service client `pulse-service` (secret `pulse-dev-secret`) whose role `pulse-service` makes it a service caller.
+
+```bash
+KC=http://localhost:8180/realms/pulse/protocol/openid-connect/token
+SERVICE=$(curl -s $KC -d grant_type=client_credentials -d client_id=pulse-service -d client_secret=pulse-dev-secret | jq -r .access_token)
+ALICE=$(curl -s $KC -d grant_type=password -d client_id=pulse-web -d username=alice -d password=alice | jq -r .access_token)
+
+curl -s localhost:5080/api/pulse/v2/devices -H "Authorization: Bearer $SERVICE"   # every device
+curl -s localhost:5080/api/pulse/v2/devices -H "Authorization: Bearer $ALICE"     # only alice's
+```
+
+The simulator gets its own service token. The dashboard has no login yet, so with authentication on it shows nothing.
 
 ## Observability
 
@@ -124,6 +181,11 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 | `Alerts:NoData:Timeout` / `CheckInterval` / `Enabled` | `00:01:00` / `00:00:10` / `true` | how long a series may stay silent, how often the monitor looks (detection is late by up to this much), and an off switch |
 | `Simulator:AnomalyChance` / `AnomalyMinTicks` / `AnomalyMaxTicks` | 0.002 / 5 / 15 | chance per reading that a device starts a fault, and how many readings the fault lasts |
 | `Simulator:DropoutChance` / `DropoutMinTicks` / `DropoutMaxTicks` | 0.0002 / 90 / 150 | chance per reading that a sensor goes quiet, and for how many ticks (longer than the no-data timeout, so it is noticed) |
+| `Auth:Enabled` | `false` | turns JWT authentication on. `Auth:Authority` is then required. |
+| `Auth:Authority` / `Issuer` / `Audience` | unset | the identity provider. `Issuer` is for when tokens carry a different address than the one used for discovery (Docker). An empty `Audience` skips the check. |
+| `Auth:ServiceRole` / `RequireHttpsMetadata` | `pulse-service` / `true` | the role that makes a caller a service. Keep the second one true outside local use. |
+| `Registry:Claim:PerDevicePerMinute` / `PerCallerPerMinute` | 5 / 30 | claim attempts allowed, counted in this instance |
+| `Simulator:Auth:TokenUrl` / `ClientId` / `ClientSecret` | unset | when set, the simulator authenticates with client credentials |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | when set, traces, metrics and logs are exported over OTLP |
 
 ## Trade-offs
@@ -131,18 +193,22 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 - Processors share the API process. Simple to run, but a slow consumer competes with request handling for CPU. Splitting them out is a hosting change, not a design change.
 - Alert state (raised or not) per device, metric and rule is kept in memory by one `AlertTracker` per instance. A batch only advances it after its alerts are stored, so a failed write is evaluated again on redelivery. On startup the state is rebuilt from the latest alert of each key in the database. With several API instances, partitions moving between them can still repeat a "raised" alert once, because each instance only knows what it saw or what was stored when it started. A threshold alert that is raised when a device goes silent stays raised until the device reports again, and a "no data" alert is raised next to it.
 - The no-data monitor runs in every API instance, but a Postgres advisory lock lets only one of them evaluate in a given round, and the leader reads what is already raised from the database each time, so a change of leader loses nothing. The cost is one extra connection held briefly per check. If the leader dies mid-round the lock goes with its session and another instance takes over on its next tick. The threshold alert tracker is still per instance (see the first bullet).
-- Silence is tracked per (device, metric), and a device that is decommissioned stays silent forever: there is no way to retire a device yet.
+- Silence is tracked per (device, metric). A device that is taken out of service is retired through the registry, which stops its no-data alerts. A device that was never registered and simply stops sending still stays silent until someone retires it, which means registering it first.
 - Delivery is at-least-once, so a batch can be redelivered. Writes are idempotent: a reading is identified by `(device_id, metric, ts)` and alerts by `(device_id, metric, rule, ts, state)`, both enforced by unique indexes and `ON CONFLICT DO NOTHING`. The catch is that two genuinely different values for the same device, metric and timestamp collapse into the first one. Live SignalR pushes are not deduplicated, so a redelivery can briefly repeat a point in an open browser.
-- Authentication is out of scope for this demo.
+- With authentication on, the older endpoints (`/api/devices`, `/api/alerts`, series) and the live SignalR hub need a caller but are **not yet limited to the caller's own devices**: a user could see other users' data there. Only the registry is scoped so far. Scoping them is the next change, so do not share an instance with several users until then.
+- Claim attempt counters are in memory of one instance, so with several instances the real limit is multiplied by their number.
+- Telemetry for a device that was never registered is still accepted, so the standalone demo works as before. The registry does not gate ingestion, except that a retired device is refused.
 
 ## Layout
 
 ```
-src/Pulse.Api         ingestion, stream processors, SignalR hub, query endpoints
+src/Pulse.Api         ingestion, stream processors, SignalR hub, query endpoints, device registry, authentication
 src/Pulse.Core        shared contracts and alert rules
 src/Pulse.Simulator   device simulator
 tests/Pulse.Tests     unit tests
 web/                  React + TypeScript dashboard, Playwright E2E
-db/init               TimescaleDB schema
+db/migrations         numbered SQL migrations, applied on startup
+contracts/            the OpenAPI contract this API implements (copied from the greenhaus repo)
+auth/                 Keycloak realm for the authentication override
 docs/adr              architecture decision records
 ```
