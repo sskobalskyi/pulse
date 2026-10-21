@@ -95,7 +95,7 @@ public sealed class PulseDbTests : IAsyncLifetime
             new Alert("dev-1", "temperature", "r", 70, T0.AddMinutes(5), AlertState.Resolved),
         ], default);
 
-        var alerts = await _db.GetAlertsAsync(10, default);
+        var alerts = await _db.GetAlertsAsync(10, null, default);
 
         Assert.Equal([AlertState.Resolved, AlertState.Raised], alerts.Select(a => a.State)); // newest first
         Assert.Equal(T0.AddMinutes(5), alerts[0].Timestamp);
@@ -143,7 +143,7 @@ public sealed class PulseDbTests : IAsyncLifetime
     {
         await _db.InsertAlertsAsync([new Alert("dev-1", "temperature", "no data for 60s", 75.5, T0, AlertState.Raised, AlertKind.NoData)], default);
 
-        var alert = Assert.Single(await _db.GetAlertsAsync(10, default));
+        var alert = Assert.Single(await _db.GetAlertsAsync(10, null, default));
 
         Assert.Equal(AlertKind.NoData, alert.Kind);
         Assert.Equal(75.5, alert.Value);
@@ -205,7 +205,7 @@ public sealed class PulseDbTests : IAsyncLifetime
         await _db.InsertReadingsAsync(readings, default);
         await _db.TouchLastSeenAsync(readings, default);
 
-        var devices = await _db.GetDevicesAsync(TimeSpan.FromSeconds(30), default);
+        var devices = await _db.GetDevicesAsync(TimeSpan.FromSeconds(30), null, default);
 
         Assert.Equal(
             [("dev-1", "humidity", 40.0), ("dev-1", "temperature", 22.0), ("dev-2", "temperature", 19.0)],
@@ -221,7 +221,7 @@ public sealed class PulseDbTests : IAsyncLifetime
         await _db.TouchLastSeenAsync([reading], default);
         await Task.Delay(1500);
 
-        var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(1), default));
+        var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(1), null, default));
 
         Assert.True(device.Silent);
         Assert.Equal(20, device.Value); // its last known value is still shown
@@ -234,7 +234,7 @@ public sealed class PulseDbTests : IAsyncLifetime
         // Readings age out after the retention period while the series is still known.
         await _db.TouchLastSeenAsync([new TelemetryReading("dev-1", "temperature", 20, DateTimeOffset.UtcNow)], default);
 
-        var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(30), default));
+        var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(30), null, default));
 
         Assert.Null(device.Value);
         Assert.Null(device.Timestamp);

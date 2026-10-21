@@ -242,6 +242,22 @@ public sealed class DeviceRegistry(
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>
+    /// The owner of each of these devices. Devices that are not registered, or not claimed yet, are left out.
+    /// Used to decide who gets to see a live push.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> OwnersAsync(IReadOnlyCollection<string> deviceIds, CancellationToken ct)
+    {
+        var owners = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (deviceIds.Count == 0) return owners;
+
+        await using var cmd = dataSource.CreateCommand("SELECT id, owner_id FROM devices WHERE owner_id IS NOT NULL AND id = ANY(@ids)");
+        cmd.Parameters.AddWithValue("ids", deviceIds.ToArray());
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct)) owners[reader.GetString(0)] = reader.GetString(1);
+        return owners;
+    }
+
     /// <summary>Which of these devices are retired. Used to refuse their data.</summary>
     public async Task<IReadOnlySet<string>> RetiredAmongAsync(IReadOnlyCollection<string> deviceIds, CancellationToken ct)
     {

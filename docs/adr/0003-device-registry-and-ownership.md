@@ -39,9 +39,11 @@ control it.
 
 ## Consequences
 
-- The legacy endpoints (`/api/devices`, `/api/alerts`, series) and the live SignalR hub need a caller when
-  authentication is on, **but are not yet limited to the caller's own devices**. That is the next change. Do not expose
-  an instance with authentication on to several users until it lands.
+- The dashboard endpoints (`/api/devices`, `/api/alerts`, series) and the live SignalR hub follow the same rule as the
+  registry. A user connection joins a group named after its subject, a service connection joins the service group, and
+  `LiveFanout` splits every push of readings or alerts by the owner of the device it is about, looked up per batch so a
+  claim takes effect on the very next push. A device nobody has claimed reaches service callers only. With
+  authentication off, a push goes to everybody as before.
 - Claim attempt counters live in memory of one instance. With several instances the real limit is multiplied.
 - Credential hashes are stored and never interpreted. What verifies them (the MQTT broker) arrives later and decides
   the format.

@@ -26,7 +26,7 @@ public sealed class SilenceOptions
 public sealed class SilenceMonitor(
     IOptions<SilenceOptions> options,
     PulseDb db,
-    IHubContext<LiveHub> hub,
+    LiveFanout fanout,
     ILogger<SilenceMonitor> logger) : BackgroundService
 {
     /// <summary>Arbitrary but fixed: every instance must use the same number for the lock to mean anything.</summary>
@@ -77,7 +77,7 @@ public sealed class SilenceMonitor(
         if (result.Alerts.Count > 0)
         {
             await db.InsertAlertsAsync(result.Alerts, ct);
-            await hub.Clients.All.SendAsync(LiveHub.AlertsEvent, result.Alerts, ct);
+            await fanout.SendAlertsAsync(result.Alerts, ct);
         }
 
         result.Commit();

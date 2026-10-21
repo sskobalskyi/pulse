@@ -17,7 +17,7 @@ public sealed class AlertEvaluator(
     IOptions<KafkaOptions> options,
     IOptions<AlertRulesOptions> rules,
     PulseDb db,
-    IHubContext<LiveHub> hub,
+    LiveFanout fanout,
     ILogger<AlertEvaluator> logger) : ReadingsConsumer(options, logger)
 {
     private readonly AlertTracker _tracker = new();
@@ -37,7 +37,7 @@ public sealed class AlertEvaluator(
         if (result.Alerts.Count > 0)
         {
             await db.InsertAlertsAsync(result.Alerts, ct);
-            await hub.Clients.All.SendAsync(LiveHub.AlertsEvent, result.Alerts, ct);
+            await fanout.SendAlertsAsync(result.Alerts, ct);
 
             foreach (var alert in result.Alerts)
             {
