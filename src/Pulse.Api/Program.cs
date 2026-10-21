@@ -4,11 +4,13 @@ using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Pulse.Api.Auth;
 using Pulse.Api.Endpoints;
 using Pulse.Api.Hubs;
 using Pulse.Api.Messaging;
 using Pulse.Api.Observability;
 using Pulse.Api.Processing;
+using Pulse.Api.Registry;
 using Pulse.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,6 +22,11 @@ builder.Services.Configure<SilenceOptions>(builder.Configuration.GetSection("Ale
 builder.Services.AddSingleton(NpgsqlDataSource.Create(
     builder.Configuration.GetConnectionString("Timescale") ?? throw new InvalidOperationException("Missing ConnectionStrings:Timescale")));
 builder.Services.AddSingleton<PulseDb>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<DeviceRegistry>();
+
+builder.Services.AddPulseAuth();
+builder.Services.AddClaimRateLimiting();
 
 builder.Services.AddSingleton<IProducer<string, string>>(_ =>
 {
@@ -33,6 +40,9 @@ builder.Services.AddSingleton<IProducer<string, string>>(_ =>
     }).Build();
 });
 
+// Registered first: hosted services start in order, so the schema is current before any consumer runs.
+builder.Services.AddSingleton<SchemaMigrator>();
+builder.Services.AddHostedService<MigrationService>();
 builder.Services.AddHostedService<KafkaTopicInitializer>();
 builder.Services.AddHostedService<TimescaleWriter>();
 builder.Services.AddHostedService<LivePublisher>();
@@ -40,7 +50,10 @@ builder.Services.AddHostedService<AlertEvaluator>();
 builder.Services.AddHostedService<SilenceMonitor>();
 
 builder.Services.AddSignalR();
-builder.Services.AddProblemDetails();
+// Every problem response carries a stable `code`, as the v2 contract requires, including framework-generated ones.
+builder.Services.AddExceptionHandler<ProblemExceptionHandler>();
+builder.Services.AddProblemDetails(o => o.CustomizeProblemDetails = ctx =>
+    ctx.ProblemDetails.Extensions.TryAdd("code", ApiProblems.CodeFor(ctx.ProblemDetails.Status)));
 builder.Services.AddHealthChecks();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithOrigins(builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? ["http://localhost:5173"])
@@ -72,9 +85,13 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseCors();
+app.UseAuthentication();
+app.UseRateLimiter();
+app.UseAuthorization();
 app.MapHealthChecks("/health");
 app.MapTelemetryEndpoints();
-app.MapHub<LiveHub>("/hubs/live");
+app.MapDeviceRegistry();
+app.MapHub<LiveHub>("/hubs/live").RequireAuthorization(Policies.Caller);
 
 app.Run();
 

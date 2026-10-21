@@ -1,5 +1,10 @@
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Pulse.Api.Storage;
 using Microsoft.AspNetCore.SignalR.Client;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -23,7 +28,7 @@ public sealed class PipelineFixture : IAsyncLifetime
     private static readonly string[] EnvKeys =
     [
         "ConnectionStrings__Timescale", "Kafka__BootstrapServers", "Kafka__AutoOffsetReset",
-        "Alerts__NoData__Timeout", "Alerts__NoData__CheckInterval",
+        "Alerts__NoData__Timeout", "Alerts__NoData__CheckInterval", "Registry__Claim__PerCallerPerMinute",
     ];
 
     private readonly RedpandaContainer _redpanda = new RedpandaBuilder("docker.redpanda.com/redpandadata/redpanda:v24.3.7").Build();
@@ -42,9 +47,7 @@ public sealed class PipelineFixture : IAsyncLifetime
     {
         await Task.WhenAll(_redpanda.StartAsync(), _timescale.StartAsync());
 
-        await using (var dataSource = NpgsqlDataSource.Create(_timescale.GetConnectionString()))
-            await TestSchema.ApplyAsync(dataSource);
-
+        // No schema is applied here: the API migrates the empty database itself on startup, as it does in compose.
         // Environment variables rather than ConfigureAppConfiguration: Program reads some settings while it is
         // still building the host, before test overrides are applied.
         Environment.SetEnvironmentVariable("ConnectionStrings__Timescale", _timescale.GetConnectionString());
@@ -55,6 +58,10 @@ public sealed class PipelineFixture : IAsyncLifetime
         // at threshold alerts, because every test device falls silent a few seconds after its last reading.
         Environment.SetEnvironmentVariable("Alerts__NoData__Timeout", "00:00:03");
         Environment.SetEnvironmentVariable("Alerts__NoData__CheckInterval", "00:00:00.500");
+
+        // Every test in the process shares one caller as far as the claim limiter can tell, so the per-caller limit is out of the way.
+        // The per-device limit keeps its default, and its test relies on it.
+        Environment.SetEnvironmentVariable("Registry__Claim__PerCallerPerMinute", "1000");
 
         _factory = new WebApplicationFactory<Program>();
         Client = _factory.CreateClient(); // also starts the host, and with it the stream processors
@@ -69,6 +76,22 @@ public sealed class PipelineFixture : IAsyncLifetime
 
         await Task.WhenAll(_redpanda.DisposeAsync().AsTask(), _timescale.DisposeAsync().AsTask());
     }
+
+    /// <summary>
+    /// A second host on the same database that serves HTTP only: no stream processors, no monitors, just the migration.
+    /// Tests that need different settings, such as authentication on, use it so the shared stack keeps one consumer per group.
+    /// </summary>
+    public WebApplicationFactory<Program> CreateHttpOnlyHost(Action<IServiceCollection> configure, params (string Key, string Value)[] settings) =>
+        _factory!.WithWebHostBuilder(builder =>
+        {
+            foreach (var (key, value) in settings) builder.UseSetting(key, value);
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IHostedService>();
+                services.AddHostedService<MigrationService>();
+                configure(services);
+            });
+        });
 
     /// <summary>A SignalR client for the in-process server. Long polling, because the test server has no WebSockets.</summary>
     public HubConnection CreateHubConnection() =>
