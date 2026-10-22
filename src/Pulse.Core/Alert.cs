@@ -22,6 +22,7 @@ public enum AlertKind
     NoData,
 }
 
+/// <param name="Direction">For a threshold alert that was raised: below or above, which way the value left its range.</param>
 public sealed record Alert(
     string DeviceId,
     string Metric,
@@ -30,7 +31,8 @@ public sealed record Alert(
     DateTimeOffset Timestamp,
     AlertState State = AlertState.Raised,
     AlertKind Kind = AlertKind.Threshold,
-    string? Channel = null)
+    string? Channel = null,
+    string? Direction = null)
 {
     /// <summary>The channel this is about. A channel nobody named is the one named after the metric.</summary>
     [JsonIgnore]

@@ -23,6 +23,10 @@ public sealed record ThresholdRule(string Metric, double? Min, double? Max, doub
 {
     public string Name => $"{Metric} outside [{Min?.ToString() ?? "-inf"}, {Max?.ToString() ?? "+inf"}]";
 
+    /// <summary>Which way a value is outside the range, below or above, or null if it is inside.</summary>
+    public string? DirectionOf(double value) =>
+        Min is { } min && value < min ? "below" : Max is { } max && value > max ? "above" : null;
+
     public RuleVerdict Classify(TelemetryReading reading)
     {
         if (!string.Equals(reading.Metric, Metric, StringComparison.OrdinalIgnoreCase))

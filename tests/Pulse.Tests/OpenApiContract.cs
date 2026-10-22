@@ -126,7 +126,8 @@ public sealed class OpenApiContract
     }
 
     // Point '#/components/schemas/X' references at the registered definitions document.
-    private static JsonNode PointAtDefinitions(JsonNode node)
+    // Shared with the AsyncAPI checker, which reads the same kind of document and registers its schemas the same way.
+    internal static JsonNode PointAtDefinitions(JsonNode node, string baseUri = BaseUri)
     {
         switch (node)
         {
@@ -134,20 +135,20 @@ public sealed class OpenApiContract
                 foreach (var property in obj.ToList())
                 {
                     if (property.Key == "$ref" && property.Value is JsonValue v && v.TryGetValue<string>(out var text) && text.StartsWith(SchemaPrefix, StringComparison.Ordinal))
-                        obj[property.Key] = BaseUri + "#/$defs/" + text[SchemaPrefix.Length..];
-                    else if (property.Value is not null) PointAtDefinitions(property.Value);
+                        obj[property.Key] = baseUri + "#/$defs/" + text[SchemaPrefix.Length..];
+                    else if (property.Value is not null) PointAtDefinitions(property.Value, baseUri);
                 }
 
                 break;
             case JsonArray array:
-                foreach (var item in array.OfType<JsonNode>()) PointAtDefinitions(item);
+                foreach (var item in array.OfType<JsonNode>()) PointAtDefinitions(item, baseUri);
                 break;
         }
 
         return node;
     }
 
-    private static JsonNode? ToJson(YamlNode node) => node switch
+    internal static JsonNode? ToJson(YamlNode node) => node switch
     {
         YamlMappingNode map => new JsonObject(map.Children.Select(c => KeyValuePair.Create(((YamlScalarNode)c.Key).Value!, ToJson(c.Value)))),
         YamlSequenceNode seq => new JsonArray(seq.Children.Select(ToJson).ToArray()),

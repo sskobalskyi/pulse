@@ -1,0 +1,34 @@
+# Turns integration events on and adds the RabbitMQ they go through:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.events.yml up --build
+#
+# Pulse publishes alert, device status and device retired events to the topic exchange `integration.events`, and registers
+# devices from `device.allocated.v1`. Without this file none of that runs, and Pulse needs no broker.
+#
+# RabbitMQ management: http://localhost:15673 (pulse / pulse). The ports are shifted by one so this does not clash with the
+# broker of another project on the same machine. Local use only, the credentials are not a secret.
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: pulse
+      RABBITMQ_DEFAULT_PASS: pulse
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  api:
+    environment:
+      Events__Enabled: "true"
+      Events__RabbitMq__HostName: rabbitmq
+      Events__RabbitMq__UserName: pulse
+      Events__RabbitMq__Password: pulse
+    depends_on:
+      rabbitmq:
+        condition: service_healthy

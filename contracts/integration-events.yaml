@@ -1,0 +1,444 @@
+asyncapi: 3.0.0
+info:
+  title: Greenhaus integration events
+  version: 0.1.0
+  description: |
+    Business events exchanged between Orderflow, Pulse, Docs-Brain and the Greenhaus services over
+    RabbitMQ. They are the only coupling between the projects.
+
+    Every event is published to the topic exchange `integration.events` with the channel address as the
+    routing key, and carries the headers below. Consumers are idempotent on `messageId`.
+
+    **These are integration events, not the internal saga messages.** Orderflow's internal
+    `OrderConfirmed` carries only an order id. The integration event `order.confirmed.v1` is a separate,
+    versioned message that Orderflow publishes with the customer, the lines and the total, because the
+    Greenhaus services need them and must not depend on Orderflow's internals.
+
+    Secrets never appear in events. Device credentials and claim tokens travel only as hashes.
+  license:
+    name: MIT
+    url: https://opensource.org/license/mit
+defaultContentType: application/json
+servers:
+  rabbitmq:
+    host: localhost:5672
+    protocol: amqp
+    description: Local RabbitMQ, vhost `/`, topic exchange `integration.events`
+
+channels:
+  orderConfirmed:
+    address: order.confirmed.v1
+    messages:
+      orderConfirmed: { $ref: '#/components/messages/OrderConfirmed' }
+  orderShipped:
+    address: order.shipped.v1
+    messages:
+      orderShipped: { $ref: '#/components/messages/OrderShipped' }
+  orderReturned:
+    address: order.returned.v1
+    messages:
+      orderReturned: { $ref: '#/components/messages/OrderReturned' }
+  orderRefunded:
+    address: order.refunded.v1
+    messages:
+      orderRefunded: { $ref: '#/components/messages/OrderRefunded' }
+  deviceAllocated:
+    address: device.allocated.v1
+    messages:
+      deviceAllocated: { $ref: '#/components/messages/DeviceAllocated' }
+  deviceClaimed:
+    address: device.claimed.v1
+    messages:
+      deviceClaimed: { $ref: '#/components/messages/DeviceClaimed' }
+  deviceRetired:
+    address: device.retired.v1
+    messages:
+      deviceRetired: { $ref: '#/components/messages/DeviceRetired' }
+  deviceStatus:
+    address: device.status.v1
+    messages:
+      deviceStatus: { $ref: '#/components/messages/DeviceStatus' }
+  alertRaised:
+    address: alert.raised.v1
+    messages:
+      alertRaised: { $ref: '#/components/messages/AlertRaised' }
+  alertResolved:
+    address: alert.resolved.v1
+    messages:
+      alertResolved: { $ref: '#/components/messages/AlertResolved' }
+  commandCompleted:
+    address: command.completed.v1
+    messages:
+      commandCompleted: { $ref: '#/components/messages/CommandCompleted' }
+  subscriptionChanged:
+    address: subscription.changed.v1
+    messages:
+      subscriptionChanged: { $ref: '#/components/messages/SubscriptionChanged' }
+  grantStatusChanged:
+    address: grant.status_changed.v1
+    messages:
+      grantStatusChanged: { $ref: '#/components/messages/GrantStatusChanged' }
+  entitlementChanged:
+    address: entitlement.changed.v1
+    messages:
+      entitlementChanged: { $ref: '#/components/messages/EntitlementChanged' }
+  limitReached:
+    address: limit.reached.v1
+    messages:
+      limitReached: { $ref: '#/components/messages/LimitReached' }
+
+operations:
+  publishOrderConfirmed:
+    action: send
+    channel: { $ref: '#/channels/orderConfirmed' }
+    summary: Orderflow publishes when the saga confirms an order.
+  consumeOrderConfirmed:
+    action: receive
+    channel: { $ref: '#/channels/orderConfirmed' }
+    summary: Greenhaus fulfilment allocates devices, billing evaluates purchase grants.
+  publishOrderShipped:
+    action: send
+    channel: { $ref: '#/channels/orderShipped' }
+    summary: Orderflow publishes when an order is marked shipped.
+  consumeOrderShipped:
+    action: receive
+    channel: { $ref: '#/channels/orderShipped' }
+    summary: Greenhaus fulfilment makes the order's devices claimable.
+  publishOrderReturned:
+    action: send
+    channel: { $ref: '#/channels/orderReturned' }
+    summary: Orderflow publishes when a return is registered.
+  consumeOrderReturned:
+    action: receive
+    channel: { $ref: '#/channels/orderReturned' }
+    summary: Billing moves the purchase grant to at risk.
+  publishOrderRefunded:
+    action: send
+    channel: { $ref: '#/channels/orderRefunded' }
+    summary: Orderflow publishes when money is refunded.
+  consumeOrderRefunded:
+    action: receive
+    channel: { $ref: '#/channels/orderRefunded' }
+    summary: Billing moves the purchase grant to at risk.
+  publishDeviceAllocated:
+    action: send
+    channel: { $ref: '#/channels/deviceAllocated' }
+    summary: Greenhaus fulfilment publishes after packing devices for an order.
+  consumeDeviceAllocated:
+    action: receive
+    channel: { $ref: '#/channels/deviceAllocated' }
+    summary: Pulse registers the device in state allocated.
+  publishDeviceClaimed:
+    action: send
+    channel: { $ref: '#/channels/deviceClaimed' }
+    summary: Greenhaus publishes after a successful claim.
+  consumeDeviceClaimed:
+    action: receive
+    channel: { $ref: '#/channels/deviceClaimed' }
+    summary: Orderflow shows the order as activated, Docs-Brain learns which devices a household has.
+  publishDeviceRetired:
+    action: send
+    channel: { $ref: '#/channels/deviceRetired' }
+    summary: Pulse publishes when a device is retired.
+  publishDeviceStatus:
+    action: send
+    channel: { $ref: '#/channels/deviceStatus' }
+    summary: Pulse publishes online and offline changes.
+  publishAlertRaised:
+    action: send
+    channel: { $ref: '#/channels/alertRaised' }
+    summary: Pulse publishes when an alert rule breaches.
+  publishAlertResolved:
+    action: send
+    channel: { $ref: '#/channels/alertResolved' }
+    summary: Pulse publishes when the value is back in range.
+  publishCommandCompleted:
+    action: send
+    channel: { $ref: '#/channels/commandCompleted' }
+    summary: Pulse publishes the final result of a command.
+  publishSubscriptionChanged:
+    action: send
+    channel: { $ref: '#/channels/subscriptionChanged' }
+    summary: Billing publishes subscription lifecycle changes.
+  publishGrantStatusChanged:
+    action: send
+    channel: { $ref: '#/channels/grantStatusChanged' }
+    summary: Billing publishes grant changes, including at risk and revoked.
+  publishEntitlementChanged:
+    action: send
+    channel: { $ref: '#/channels/entitlementChanged' }
+    summary: Billing publishes the effective tier of a user whenever it changes.
+  consumeEntitlementChanged:
+    action: receive
+    channel: { $ref: '#/channels/entitlementChanged' }
+    summary: Greenhaus API applies the limits, and sends the downgrade notification.
+  publishLimitReached:
+    action: send
+    channel: { $ref: '#/channels/limitReached' }
+    summary: Greenhaus API publishes when a user hits a tier limit, for the funnel dashboard.
+
+components:
+  messages:
+    OrderConfirmed:
+      name: order.confirmed.v1
+      title: Order confirmed
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [orderId, customerId, lines, total, currency, confirmedAt]
+        properties:
+          orderId: { type: string, format: uuid }
+          customerId: { type: string, description: Keycloak subject }
+          lines:
+            type: array
+            items: { $ref: '#/components/schemas/OrderLine' }
+          total: { type: number }
+          currency: { type: string, pattern: '^[A-Z]{3}$' }
+          confirmedAt: { type: string, format: date-time }
+    OrderShipped:
+      name: order.shipped.v1
+      title: Order shipped
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [orderId, customerId, shippedAt]
+        properties:
+          orderId: { type: string, format: uuid }
+          customerId: { type: string }
+          shippedAt: { type: string, format: date-time }
+    OrderReturned:
+      name: order.returned.v1
+      title: Order returned
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [orderId, customerId, returnedAt, lines]
+        properties:
+          orderId: { type: string, format: uuid }
+          customerId: { type: string }
+          returnedAt: { type: string, format: date-time }
+          lines:
+            type: array
+            items: { $ref: '#/components/schemas/OrderLine' }
+    OrderRefunded:
+      name: order.refunded.v1
+      title: Order refunded
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [orderId, customerId, amount, currency, refundedAt]
+        properties:
+          orderId: { type: string, format: uuid }
+          customerId: { type: string }
+          amount: { type: number }
+          currency: { type: string, pattern: '^[A-Z]{3}$' }
+          refundedAt: { type: string, format: date-time }
+          reason: { type: string }
+    DeviceAllocated:
+      name: device.allocated.v1
+      title: Device allocated to an order
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [deviceId, orderId, customerId, sku, model, claimTokenHash, claimTokenExpiresAt, credentialHash, capabilities]
+        properties:
+          deviceId: { type: string }
+          orderId: { type: string, format: uuid }
+          customerId: { type: string }
+          sku: { type: string }
+          model: { type: string }
+          claimTokenHash:
+            type: string
+            description: |
+              SHA-256 of the claim token (its UTF-8 bytes) as 64 hexadecimal characters, optionally written
+              `sha256:<hex>`. Pulse registers the device with it and rejects anything else. Same format as
+              `claimTokenHash` of the Pulse device API.
+            pattern: '^(sha256:)?[0-9A-Fa-f]{64}$'
+          claimTokenExpiresAt: { type: string, format: date-time }
+          credentialHash:
+            type: string
+            description: Salted hash of the device's broker password. Opaque to Pulse, which stores it for the broker to verify.
+          capabilities:
+            type: object
+            description: |
+              What the device declared. This is what Pulse registers the device with, so it has to be complete: the
+              channels, and for every actuator the hard limits the device enforces itself.
+            required: [channels, actuators]
+            properties:
+              channels:
+                type: array
+                items:
+                  type: object
+                  required: [id, metric]
+                  properties:
+                    id:
+                      type: string
+                      description: Unique within the device. Letters, digits, `.`, `_` and `-` only.
+                      pattern: '^[A-Za-z0-9._-]+$'
+                    metric: { type: string }
+                    label: { type: string }
+                    unit: { type: string }
+              actuators:
+                type: array
+                items:
+                  type: object
+                  required: [id, kind, hardLimits]
+                  properties:
+                    id: { type: string }
+                    kind: { type: string, enum: [pump, heater, lamp, fan, humidifier] }
+                    hardLimits:
+                      type: object
+                      description: Limits the device enforces whatever the cloud asks for. `maxRunSeconds` must not exceed `dailyCapSeconds`.
+                      required: [maxRunSeconds, minIntervalSeconds, dailyCapSeconds]
+                      properties:
+                        maxRunSeconds: { type: integer, minimum: 1 }
+                        minIntervalSeconds: { type: integer, minimum: 0 }
+                        dailyCapSeconds: { type: integer, minimum: 1 }
+                    thermalCutoff: { type: boolean }
+    DeviceClaimed:
+      name: device.claimed.v1
+      title: Device claimed
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [deviceId, ownerId, potId, orderId, claimedAt]
+        properties:
+          deviceId: { type: string }
+          ownerId: { type: string }
+          potId: { type: string, format: uuid }
+          orderId: { type: string, format: uuid }
+          claimedAt: { type: string, format: date-time }
+    DeviceRetired:
+      name: device.retired.v1
+      title: Device retired
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [deviceId, retiredAt]
+        properties:
+          deviceId: { type: string }
+          retiredAt: { type: string, format: date-time }
+    DeviceStatus:
+      name: device.status.v1
+      title: Device online or offline
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [deviceId, status, at]
+        properties:
+          deviceId: { type: string }
+          status: { type: string, enum: [online, offline] }
+          at: { type: string, format: date-time }
+          cause: { type: string, enum: [last_will, no_data, reconnect] }
+    AlertRaised:
+      name: alert.raised.v1
+      title: Alert raised
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload: { $ref: '#/components/schemas/Alert' }
+    AlertResolved:
+      name: alert.resolved.v1
+      title: Alert resolved
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload: { $ref: '#/components/schemas/Alert' }
+    CommandCompleted:
+      name: command.completed.v1
+      title: Command completed
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [commandId, deviceId, status, finishedAt]
+        properties:
+          commandId: { type: string, format: uuid }
+          deviceId: { type: string }
+          actuatorId: { type: string }
+          status: { type: string, enum: [completed, rejected, failed, expired] }
+          reason: { type: string }
+          finishedAt: { type: string, format: date-time }
+    SubscriptionChanged:
+      name: subscription.changed.v1
+      title: Subscription changed
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [userId, tier, status, at]
+        properties:
+          userId: { type: string }
+          tier: { $ref: '#/components/schemas/Tier' }
+          status: { type: string, enum: [active, past_due, cancelled] }
+          at: { type: string, format: date-time }
+    GrantStatusChanged:
+      name: grant.status_changed.v1
+      title: Purchase grant changed
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [grantId, userId, orderId, tier, status, at]
+        properties:
+          grantId: { type: string, format: uuid }
+          userId: { type: string }
+          orderId: { type: string, format: uuid }
+          tier: { $ref: '#/components/schemas/Tier' }
+          status: { type: string, enum: [active, at_risk, revoked] }
+          graceEndsAt: { type: [string, 'null'], format: date-time }
+          at: { type: string, format: date-time }
+    EntitlementChanged:
+      name: entitlement.changed.v1
+      title: Effective entitlement changed
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [userId, tier, previousTier, reason, at]
+        properties:
+          userId: { type: string }
+          tier: { $ref: '#/components/schemas/Tier' }
+          previousTier: { $ref: '#/components/schemas/Tier' }
+          reason:
+            type: string
+            enum: [subscribed, cancelled, payment_failed, grant_started, grant_at_risk, grant_revoked, grant_expired]
+          validUntil: { type: [string, 'null'], format: date-time }
+          at: { type: string, format: date-time }
+    LimitReached:
+      name: limit.reached.v1
+      title: A tier limit was reached
+      headers: { $ref: '#/components/schemas/Headers' }
+      payload:
+        type: object
+        required: [userId, limitType, tier, at]
+        properties:
+          userId: { type: string }
+          limitType: { type: string, enum: [pots, ai_questions, history, automation, zone_grid] }
+          tier: { $ref: '#/components/schemas/Tier' }
+          at: { type: string, format: date-time }
+
+  schemas:
+    Headers:
+      type: object
+      required: [messageId, occurredAt, schemaVersion]
+      properties:
+        messageId: { type: string, format: uuid, description: Consumers deduplicate on this }
+        occurredAt: { type: string, format: date-time }
+        schemaVersion: { type: string, examples: ['1'] }
+        traceparent: { type: string, description: W3C trace context so a trace crosses projects }
+    Tier:
+      type: string
+      enum: [novice, gardener, druid]
+    OrderLine:
+      type: object
+      required: [sku, quantity, unitPrice]
+      properties:
+        sku: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        unitPrice: { type: number }
+    Alert:
+      type: object
+      required: [alertId, deviceId, channelId, metric, state, at]
+      properties:
+        alertId: { type: string }
+        deviceId: { type: string }
+        channelId: { type: string }
+        metric: { type: string }
+        rule: { type: string, enum: [threshold, no_data] }
+        state: { type: string, enum: [raised, resolved] }
+        direction: { type: string, enum: [below, above] }
+        value: { type: [number, 'null'] }
+        at: { type: string, format: date-time }

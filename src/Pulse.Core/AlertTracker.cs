@@ -53,7 +53,7 @@ public sealed class AlertTracker
 
                 var key = new AlertKey(reading.DeviceId, reading.Metric, rule.Name, reading.ChannelId);
                 if (verdict == RuleVerdict.Breach && next.Add(key))
-                    alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Raised, Channel: key.Channel));
+                    alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Raised, Channel: key.Channel, Direction: rule.DirectionOf(reading.Value)));
                 else if (verdict == RuleVerdict.Clear && next.Remove(key))
                     alerts.Add(new Alert(key.DeviceId, key.Metric, key.Rule, reading.Value, reading.Timestamp, AlertState.Resolved, Channel: key.Channel));
             }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NpgsqlTypes;
+using Pulse.Api.Events;
 using Pulse.Api.Processing;
 using Pulse.Core;
 
@@ -39,7 +40,8 @@ public readonly record struct RegistryResult<T>(T? Value, RegistryError Error)
 public sealed class DeviceRegistry(
     NpgsqlDataSource dataSource,
     TimeProvider time,
-    IOptions<SilenceOptions> silence)
+    IOptions<SilenceOptions> silence,
+    EventOutbox? outbox = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -195,6 +197,10 @@ public sealed class DeviceRegistry(
                 await using var forget = new NpgsqlCommand("DELETE FROM device_last_seen WHERE device_id = @id", conn, tx);
                 forget.Parameters.AddWithValue("id", id);
                 await forget.ExecuteNonQueryAsync(ct);
+
+                // Announced in the same transaction, and only when the device really was retired just now, not on a repeated call.
+                if (outbox is { Enabled: true })
+                    await outbox.AddAsync(conn, tx, EventNames.DeviceRetired, IntegrationEvents.ForRetired(id, time.GetUtcNow()), time.GetUtcNow(), ct);
             }
         }
 

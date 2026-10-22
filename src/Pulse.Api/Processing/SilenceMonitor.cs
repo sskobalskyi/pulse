@@ -81,6 +81,9 @@ public sealed class SilenceMonitor(
         }
 
         result.Commit();
+
+        // The same round decides which devices went offline or came back, for the events. Only the leader does this, so it is reported once.
+        await db.ReconcileDeviceStatusAsync(timeout, DateTimeOffset.UtcNow, ct);
     }
 
     private static async Task<bool> WaitAsync(PeriodicTimer timer, CancellationToken ct)
