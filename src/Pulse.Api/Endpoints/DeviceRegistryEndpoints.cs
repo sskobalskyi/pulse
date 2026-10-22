@@ -25,12 +25,14 @@ public static class DeviceRegistryEndpoints
         api.MapGet("/devices/{deviceId}", GetAsync);
         api.MapPut("/devices/{deviceId}/channels/{channelId}/calibration", CalibrateAsync);
         api.MapGet("/devices/{deviceId}/channels/{channelId}/series", SeriesAsync);
+        api.MapGet("/devices/{deviceId}/rules", GetRulesAsync);
 
         var service = api.MapGroup("").RequireAuthorization(Policies.Service);
         service.MapPost("/devices", RegisterAsync);
         service.MapPost("/devices/{deviceId}/ship", ShipAsync);
         service.MapPost("/devices/{deviceId}/claim", ClaimAsync).WithMetadata(new ClaimRateLimited());
         service.MapPost("/devices/{deviceId}/retire", RetireAsync);
+        service.MapPut("/devices/{deviceId}/rules", SetRulesAsync);
     }
 
     private static async Task<IResult> ListAsync(
@@ -92,6 +94,36 @@ public static class DeviceRegistryEndpoints
 
         var result = await registry.CalibrateAsync(deviceId, channelId, dry, wet, Caller.From(http.User, auth.Value).OwnerScope, ct);
         return result.IsOk ? Results.Ok(result.Value) : ApiProblems.NotFound("device or channel");
+    }
+
+    private static async Task<IResult> GetRulesAsync(
+        string deviceId, HttpContext http, DeviceRegistry registry, DeviceRuleStore rules, IOptions<AuthOptions> auth, CancellationToken ct)
+    {
+        var device = await registry.GetAsync(deviceId, Caller.From(http.User, auth.Value).OwnerScope, ct);
+        return device is null ? ApiProblems.NotFound() : Results.Ok(await rules.ListAsync(deviceId, ct));
+    }
+
+    /// <summary>
+    /// Replaces the rules of a device. Only a service caller sets them: Greenhaus turns a pot's requirements into rules, and
+    /// letting anyone write rules straight to Pulse would bypass what Greenhaus allows a tier to have.
+    /// </summary>
+    private static async Task<IResult> SetRulesAsync(
+        string deviceId, DeviceRule[]? body, DeviceRegistry registry, DeviceRuleStore rules, CancellationToken ct)
+    {
+        var device = await registry.GetAsync(deviceId, null, ct);
+        if (device is null) return ApiProblems.NotFound();
+        if (device.State == Lifecycle.Retired.ToWire())
+            return ApiProblems.Problem(StatusCodes.Status409Conflict, "invalid_state", "A retired device has no rules to set.");
+
+        var problems = RuleValidator.Validate(body, [.. device.Capabilities.Channels.Select(c => new ChannelRef(c.Id, c.Metric))]);
+        if (problems.Count > 0)
+        {
+            var code = problems.All(p => p.Code == "unknown_channel") ? "unknown_channel" : "validation_failed";
+            return ApiProblems.Problem(StatusCodes.Status400BadRequest, code, "The rules are invalid.", string.Join(" ", problems.Select(p => p.Message)));
+        }
+
+        await rules.ReplaceAsync(deviceId, body!, ct);
+        return Results.Ok(await rules.ListAsync(deviceId, ct));
     }
 
     // The longest window each resolution answers, which keeps one request from asking for millions of points.

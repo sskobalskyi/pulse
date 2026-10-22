@@ -18,10 +18,10 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
 
     /// <summary>Operations that exist in the contract and are implemented. Keep in step with the endpoints.</summary>
     private static readonly string[] Implemented =
-        ["listDevices", "registerDevice", "getDevice", "markShipped", "claimDevice", "retireDevice", "calibrateChannel", "getSeries"];
+        ["listDevices", "registerDevice", "getDevice", "markShipped", "claimDevice", "retireDevice", "calibrateChannel", "getSeries", "getRules", "setRules"];
 
     /// <summary>Operations of the contract that later changes will implement. Listing them keeps the gap visible.</summary>
-    private static readonly string[] NotYet = ["getRules", "setRules", "sendCommand", "listCommands", "getCommand"];
+    private static readonly string[] NotYet = ["sendCommand", "listCommands", "getCommand"];
 
     private static string ContractPath()
     {
@@ -147,6 +147,28 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         using var seriesMissing = await stack.Client.GetAsync(Url($"/devices/{id}/channels/nope/series?from={from}"));
         Assert.Equal(HttpStatusCode.NotFound, seriesMissing.StatusCode);
         await Contract.Verify(seriesMissing, "GET", "/devices/{deviceId}/channels/{channelId}/series");
+
+        // setRules and getRules: 200, 400 for rules that make no sense, 404
+        var ruleSet = new object[]
+        {
+            new { channelId = "soil-1", kind = "threshold", min = 30, max = 80, margin = 5 },
+            new { channelId = "soil-1", kind = "no_data", timeoutSeconds = 120 },
+        };
+        using var rulesStored = await stack.Client.PutAsJsonAsync(Url($"/devices/{id}/rules"), ruleSet);
+        Assert.Equal(HttpStatusCode.OK, rulesStored.StatusCode);
+        await Contract.Verify(rulesStored, "PUT", "/devices/{deviceId}/rules");
+        using var rulesBad = await stack.Client.PutAsJsonAsync(Url($"/devices/{id}/rules"), new object[] { new { channelId = "soil-9", kind = "threshold", min = 1 } });
+        Assert.Equal(HttpStatusCode.BadRequest, rulesBad.StatusCode);
+        await Contract.Verify(rulesBad, "PUT", "/devices/{deviceId}/rules");
+        using var rulesMissing = await stack.Client.PutAsJsonAsync(Url("/devices/nope/rules"), ruleSet);
+        Assert.Equal(HttpStatusCode.NotFound, rulesMissing.StatusCode);
+        await Contract.Verify(rulesMissing, "PUT", "/devices/{deviceId}/rules");
+        using var rulesRead = await stack.Client.GetAsync(Url($"/devices/{id}/rules"));
+        Assert.Equal(HttpStatusCode.OK, rulesRead.StatusCode);
+        await Contract.Verify(rulesRead, "GET", "/devices/{deviceId}/rules");
+        using var rulesReadMissing = await stack.Client.GetAsync(Url("/devices/nope/rules"));
+        Assert.Equal(HttpStatusCode.NotFound, rulesReadMissing.StatusCode);
+        await Contract.Verify(rulesReadMissing, "GET", "/devices/{deviceId}/rules");
 
         // retireDevice: 200 and 404
         using var retired = await Post($"/devices/{id}/retire");

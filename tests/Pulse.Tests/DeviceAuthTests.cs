@@ -181,6 +181,7 @@ public sealed class DeviceAuthTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, await Status(HttpMethod.Post, $"/devices/{id}/ship", user));
         Assert.Equal(HttpStatusCode.Forbidden, await Status(HttpMethod.Post, $"/devices/{id}/claim", user, new { token = "token", ownerId = "me" }));
         Assert.Equal(HttpStatusCode.Forbidden, await Status(HttpMethod.Post, $"/devices/{id}/retire", user));
+        Assert.Equal(HttpStatusCode.Forbidden, await Status(HttpMethod.Put, $"/devices/{id}/rules", user, Array.Empty<object>()));
     }
 
     [Fact]

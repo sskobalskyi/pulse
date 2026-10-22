@@ -17,6 +17,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Observability:** OpenTelemetry traces across HTTP and Kafka (context in message headers, span links for batches), metrics including per-partition consumer lag, and correlated logs. See [Observability](#observability).
 - **Channels:** a series is a device, a metric and a channel, so one device can have several sensors of the same kind (a soil moisture sensor per zone). Alerts, no-data detection and charts work per channel. Readings of known metrics are checked against a plausible range, and a registered device's readings must fit the channels it declared. See [Channels and metrics](#channels-and-metrics).
 - **Device registry:** devices are registered before they send data and move through `allocated`, `shipped`, `claimed`, `active`, `retired`. Claiming uses a one-time, expiring token that is stored only as a hash and is rate limited. Retiring a device stops its no-data alerts. See [Device registry and authentication](#device-registry-and-authentication).
+- **Alert rules per device:** each channel of a device can have a threshold rule (range and hysteresis margin) and a no-data timeout of its own, set over the API. A channel without one uses the platform's rules for its metric. See [Alert rules](#alert-rules).
 - **Authentication:** Keycloak JWTs behind a switch. Service callers manage the registry, users see only the devices they own.
 - **Schema migrations:** plain SQL files applied by the API on startup, with an existing database adopted rather than rebuilt ([ADR 0002](docs/adr/0002-sql-migrations-on-startup.md)).
 - **Contract tests:** responses are validated against `contracts/pulse-device-api.yaml`, the OpenAPI document that the rest of the system is built against.
@@ -113,9 +114,11 @@ stateDiagram-v2
 | `GET /devices`, `GET /devices/{id}` | user or service | A user sees only their own devices. A device that is not theirs answers 404. |
 | `PUT /devices/{id}/channels/{channelId}/calibration` | user or service | Stores the dry and wet raw values of a channel. They are stored, not yet applied to readings. |
 | `GET /devices/{id}/channels/{channelId}/series` | user or service | Points of one channel, see [Channels and metrics](#channels-and-metrics). |
+| `GET /devices/{id}/rules` | user or service | The alert rules of a device. A user reads the rules of their own devices. |
+| `PUT /devices/{id}/rules` | service | Replaces them, see [Alert rules](#alert-rules). A user cannot set rules even on their own device. |
 
 Errors are `application/problem+json` with a stable `code` (`invalid_state`, `token_invalid`, `token_expired`, `rate_limited`,
-`validation_failed`, ...) to switch on. Rules and commands from the same contract are not implemented yet.
+`validation_failed`, ...) to switch on. Commands from the same contract are not implemented yet.
 
 ### Channels and metrics
 
@@ -158,6 +161,31 @@ Metrics outside the list (the demo's `humidity` and `battery`) are not judged.
 
 A raw series that hit the point limit carries the latest points and the header `X-Pulse-Truncated: true`. A user sees the
 series of their own devices only, like everything else.
+
+### Alert rules
+
+A device's rules say what is normal for each of its channels. They are stored with the device and replaced as a whole:
+`PUT /devices/{id}/rules` with a list, where an empty list removes every rule of its own and puts the device back on the platform defaults.
+
+```json
+[
+  { "channelId": "soil-1", "kind": "threshold", "min": 40, "max": 70, "margin": 5 },
+  { "channelId": "soil-1", "kind": "no_data",   "timeoutSeconds": 900 },
+  { "channelId": "air-t",  "kind": "threshold", "max": 32 }
+]
+```
+
+- **Threshold.** At least one of `min` and `max`. `margin` is how far back inside the range a value has to come before the alert clears
+  (hysteresis, default 0). With both bounds it must be less than half the range, or the alert could never clear.
+- **No data.** How long the channel may stay quiet, from 10 seconds to a week.
+- A channel has at most one rule of each kind, and only for channels the device declared (`unknown_channel` otherwise). The whole list is validated
+  first and nothing changes if any rule is wrong.
+- A channel **with** a threshold rule uses only that. A channel **without** one uses the platform's rules for its metric
+  (`Alerts:Rules`, `Alerts:NoData:Timeout`). So a soil moisture channel has no alert at all until it is given a rule.
+- Rules apply to the very next reading. Changing or removing a rule resolves the alert that was raised under the old one, instead of leaving it raised
+  for ever. An alert belongs to a rule by name, and the name carries the range, so a changed range is a different rule. The same happens after
+  a restart, because the state is restored from storage.
+- Only a service caller sets rules. Greenhaus turns a pot's requirements into them, and letting anyone write them straight to Pulse would bypass what a tier may have.
 
 ### Running with authentication
 
@@ -242,6 +270,9 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 - With authentication on, the dashboard endpoints (`/api/devices`, `/api/alerts`, series) and the live hub are scoped to the caller's devices like the registry is. A device nobody has claimed, including every device of the demo simulator, is visible to service callers only. The live push looks up the owners of each batch, so it costs one indexed query per batch.
 - Claim attempt counters are in memory of one instance, so with several instances the real limit is multiplied by their number.
 - Ingestion does more per request now: a retired check and a declared-channels lookup, two small indexed queries per batch. Measured with the k6 smoke test, the ingest p95 went from about 12 ms to about 14 ms.
+- Rules cannot switch an alert **off** for a channel that the platform has a default for: a channel always has the platform's rule or one of its own. A threshold rule with a very wide range is the way to say "never".
+- Rules are read from the database for every batch, one query per batch like the owner lookup. If the rate of batches grows, a short cache is the first thing to add.
+- Changing the no-data timeout of a channel that is already silent resolves its alert and raises a new one under the new timeout.
 - Calibration is stored but not applied: a soil moisture sensor has to send percentages, not raw ADC counts, or the range check will refuse it.
 - The dashboard shows one button per metric, so two channels of one metric on the same device are drawn as one until the dashboard learns about channels. The API and storage already keep them apart.
 - Telemetry for a device that was never registered is still accepted, so the standalone demo works as before. The registry does not gate ingestion, except that a retired device is refused.

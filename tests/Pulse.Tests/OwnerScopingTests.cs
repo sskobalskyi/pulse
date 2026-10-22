@@ -160,6 +160,28 @@ public sealed class OwnerScopingTests : IDisposable
     }
 
     [Fact]
+    public async Task The_rules_of_a_device_can_be_read_by_its_owner_and_services_only()
+    {
+        var alice = OwnerName("alice");
+        var aliceDevice = await DeviceOwnedBy(alice);
+        var bobDevice = await DeviceOwnedBy(OwnerName("bob"));
+        var rule = new[] { new { channelId = "soil-1", kind = "threshold", min = 30, max = 80 } };
+        using var set = await Send(HttpMethod.Put, $"/api/pulse/v2/devices/{aliceDevice}/rules", ServiceToken(), rule);
+        Assert.Equal(HttpStatusCode.OK, set.StatusCode);
+
+        using var own = await Send(HttpMethod.Get, $"/api/pulse/v2/devices/{aliceDevice}/rules", Token(alice));
+        using var theirs = await Send(HttpMethod.Get, $"/api/pulse/v2/devices/{bobDevice}/rules", Token(alice));
+        using var asService = await Send(HttpMethod.Get, $"/api/pulse/v2/devices/{bobDevice}/rules", ServiceToken());
+        using var userWrites = await Send(HttpMethod.Put, $"/api/pulse/v2/devices/{aliceDevice}/rules", Token(alice), rule);
+
+        Assert.Equal(HttpStatusCode.OK, own.StatusCode);
+        Assert.Single((await own.Content.ReadFromJsonAsync<JsonElement[]>(Web))!);
+        Assert.Equal(HttpStatusCode.NotFound, theirs.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, asService.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, userWrites.StatusCode); // even for their own device: Greenhaus decides what rules a tier may have
+    }
+
+    [Fact]
     public async Task Live_readings_reach_only_the_owner_and_services()
     {
         var alice = OwnerName("alice");
