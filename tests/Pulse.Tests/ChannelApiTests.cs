@@ -188,6 +188,9 @@ public sealed class ChannelApiTests(PipelineFixture stack)
             await Contract.Verify(response, "GET", "/devices/{deviceId}/channels/{channelId}/series");
         }
 
+        using var noFrom = await stack.Client.GetAsync($"{V2}{path}");
+        Assert.Equal(HttpStatusCode.BadRequest, noFrom.StatusCode);
+        await Contract.Verify(noFrom, "GET", "/devices/{deviceId}/channels/{channelId}/series");
         using var unknown = await stack.Client.GetAsync($"{V2}/devices/{pot}/channels/nope/series?from={from}");
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
         await Contract.Verify(unknown, "GET", "/devices/{deviceId}/channels/{channelId}/series");
