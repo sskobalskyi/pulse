@@ -1,196 +1,84 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { LiveChart } from './components/LiveChart'
-import { LOCALES } from './i18n'
-import { fetchDevices } from './api'
-import { seriesKey, type Alert, type ConnectionStatus } from './types'
-import { useLive } from './useLive'
-import { Badge } from '@/components/ui/badge'
+import type { User } from 'oidc-client-ts'
+import Dashboard from './Dashboard'
+import { authEnabled, onUserChange, restoreUser, signIn, signOut } from './auth'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
-import { cn } from '@/lib/utils'
 
-const STATUS_POLL_MS = 5000
+type Session = { state: 'loading' } | { state: 'signedOut'; failed: boolean } | { state: 'signedIn'; user?: User }
 
-const STATUS_DOT: Record<ConnectionStatus, string> = {
-  connecting: 'bg-amber-500',
-  live: 'bg-emerald-500',
-  reconnecting: 'bg-amber-500',
-  offline: 'bg-muted-foreground',
-}
-
-interface Row {
-  deviceId: string
-  metric: string
-  value: number | null
-  silent: boolean
-}
-
+/** The dashboard, behind a sign-in when the API asks for one. With authentication off it is just the dashboard. */
 export default function App() {
-  const { t, i18n } = useTranslation()
-  const { status, latest, alerts, buffers } = useLive()
-  const [selected, setSelected] = useState<{ deviceId: string; metric: string } | null>(null)
-  const [filter, setFilter] = useState('')
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  // Signing out removes the user and then leaves for the identity provider; the page waits instead of flashing the login.
+  const leaving = useRef(false)
+  const [session, setSession] = useState<Session>(authEnabled ? { state: 'loading' } : { state: 'signedIn' })
 
-  // The API knows every series that ever reported and whether it went quiet; SignalR keeps the values fresh.
-  const { data: statuses } = useQuery({ queryKey: ['devices'], queryFn: fetchDevices, refetchInterval: STATUS_POLL_MS })
+  useEffect(() => {
+    if (!authEnabled) return
 
-  const devices = useMemo(() => {
-    const rows = new Map<string, Row>()
-    for (const d of statuses ?? []) rows.set(seriesKey(d.deviceId, d.metric), { ...d })
-    for (const [key, reading] of latest) {
-      rows.set(key, { deviceId: reading.deviceId, metric: reading.metric, value: reading.value, silent: rows.get(key)?.silent ?? false })
-    }
+    let subject: string | undefined
+    restoreUser().then(
+      (user) => {
+        subject = user?.profile.sub
+        setSession(user ? { state: 'signedIn', user } : { state: 'signedOut', failed: false })
+      },
+      () => setSession({ state: 'signedOut', failed: true }),
+    )
+    return onUserChange((user) => {
+      if (leaving.current) return
+      // What was fetched for one person must not be shown to the next. A renewed token of the same person changes nothing.
+      if (user?.profile.sub !== subject) queryClient.clear()
+      subject = user?.profile.sub
+      setSession(user ? { state: 'signedIn', user } : { state: 'signedOut', failed: false })
+    })
+  }, [queryClient])
 
-    const byDevice = new Map<string, Row[]>()
-    for (const row of rows.values()) {
-      if (filter && !row.deviceId.includes(filter.toLowerCase())) continue
-      byDevice.set(row.deviceId, [...(byDevice.get(row.deviceId) ?? []), row])
-    }
-    return [...byDevice.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [statuses, latest, filter])
-
-  const metricLabel = (metric: string) => t(`metrics.${metric}`, { defaultValue: metric })
-  const language = LOCALES.find((l) => i18n.resolvedLanguage === l) ?? 'en'
-
-  // A threshold alert carries the reading; a no-data alert carries how long the device was silent.
-  const alertDetail = (a: Alert) => {
-    if (a.kind === 'Threshold') return t('alerts.value', { value: a.value })
-    return a.state === 'Raised' ? t('alerts.noData.silent', { seconds: Math.round(a.value) }) : t('alerts.noData.resumed')
+  if (session.state === 'signedIn') {
+    const user = session.user
+    return (
+      <Dashboard
+        userName={user?.profile.preferred_username ?? user?.profile.name ?? user?.profile.sub}
+        onSignOut={
+          user
+            ? () => {
+                leaving.current = true
+                setSession({ state: 'loading' })
+                void signOut()
+              }
+            : undefined
+        }
+      />
+    )
   }
 
   return (
-    <div className="mx-auto flex max-w-[1400px] flex-col gap-4 p-4">
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('app.title')}</h1>
-          <p className="text-sm text-muted-foreground">{t('app.subtitle')}</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Badge variant="outline" role="status" className="gap-1.5">
-            <span className={cn('size-2 rounded-full', STATUS_DOT[status])} aria-hidden="true" />
-            {t(`status.${status}`)}
-          </Badge>
-          <Select value={language} onValueChange={(l) => void i18n.changeLanguage(l as string)}>
-            <SelectTrigger size="sm" aria-label={t('language')}>
-              <SelectValue>{language.toUpperCase()}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {LOCALES.map((l) => (
-                <SelectItem key={l} value={l}>
-                  {l.toUpperCase()}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </header>
-
-      <main className="grid items-start gap-4 lg:grid-cols-[320px_1fr_320px]">
-        <Card aria-labelledby="devices-title">
-          <CardHeader>
-            <h2 id="devices-title" className="font-heading text-base font-medium">
-              {t('devices.title')}
-            </h2>
-          </CardHeader>
-          <CardContent className="flex max-h-[80vh] flex-col gap-3 overflow-y-auto">
-            <Input
-              type="search"
-              placeholder={t('devices.filter')}
-              aria-label={t('devices.filter')}
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-            {devices.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t('devices.empty')}</p>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {devices.map(([deviceId, readings], n) => (
-                  <li key={deviceId} className="flex flex-col gap-2">
-                    {n > 0 && <Separator />}
-                    <strong className="text-sm">{deviceId}</strong>
-                    <div className="flex flex-wrap gap-2">
-                      {readings
-                        .slice()
-                        .sort((a, b) => a.metric.localeCompare(b.metric))
-                        .map((r) => {
-                          const isSelected = selected?.deviceId === deviceId && selected.metric === r.metric
-                          return (
-                            <Button
-                              key={r.metric}
-                              variant={isSelected ? 'default' : 'outline'}
-                              className={cn('h-auto flex-col items-start gap-0.5 px-3 py-2', r.silent && 'opacity-60')}
-                              aria-pressed={isSelected}
-                              onClick={() => setSelected({ deviceId, metric: r.metric })}
-                            >
-                              <span className="text-xs font-normal opacity-70">{metricLabel(r.metric)}</span>
-                              <span className="text-lg font-semibold tabular-nums">{r.value === null ? '—' : r.value.toFixed(1)}</span>
-                              {r.silent && <span className="text-xs font-normal text-amber-600 dark:text-amber-400">{t('devices.silent')}</span>}
-                            </Button>
-                          )
-                        })}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            {selected && (
-              <h2 className="font-heading text-base font-medium">
-                {t('chart.title', { device: selected.deviceId, metric: metricLabel(selected.metric) })}
-              </h2>
-            )}
-          </CardHeader>
-          <CardContent>
-            {selected ? (
-              <LiveChart
-                deviceId={selected.deviceId}
-                metric={selected.metric}
-                live={buffers.get(seriesKey(selected.deviceId, selected.metric)) ?? []}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground">{t('chart.select')}</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card aria-labelledby="alerts-title">
-          <CardHeader>
-            <h2 id="alerts-title" className="font-heading text-base font-medium">
-              {t('alerts.title')}
-            </h2>
-          </CardHeader>
-          <CardContent className="max-h-[80vh] overflow-y-auto">
-            {alerts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t('alerts.empty')}</p>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {alerts.map((a, i) => (
-                  <li key={`${a.deviceId}-${a.metric}-${a.timestamp}-${i}`} className="flex flex-col gap-1 text-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <span>
-                        <strong>{a.deviceId}</strong> · {metricLabel(a.metric)}
-                      </span>
-                      <Badge variant={a.state === 'Raised' ? 'destructive' : 'secondary'}>{t(`alerts.state.${a.state}`)}</Badge>
-                    </div>
-                    <span className="text-muted-foreground">
-                      {alertDetail(a)} · {new Date(a.timestamp).toLocaleTimeString(i18n.language)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </main>
+    <div className="flex min-h-svh items-center justify-center p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <h1 className="font-heading text-xl font-semibold">{t('auth.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('auth.description')}</p>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {session.state === 'loading' ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              {t('auth.checking')}
+            </p>
+          ) : (
+            <>
+              {session.failed && (
+                <p role="alert" className="text-sm text-destructive">
+                  {t('auth.failed')}
+                </p>
+              )}
+              <Button onClick={() => void signIn()}>{t('auth.signIn')}</Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

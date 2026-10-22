@@ -4,7 +4,7 @@
 #
 # Keycloak: http://localhost:8180 (admin / admin). Users alice and bob (password = their name) are ordinary users.
 # The client `pulse-service` (secret `pulse-dev-secret`) is a service caller. Local use only, none of this is a secret.
-# The dashboard has no login yet, so with authentication on it shows nothing: use the API with a token (see the README).
+# The dashboard signs in through Keycloak as alice or bob and shows the devices they own. The API can also be used with a token (see the README).
 
 services:
   keycloak:
@@ -27,6 +27,15 @@ services:
       Auth__Authority: http://keycloak:8080/realms/pulse
       Auth__Issuer: http://localhost:8180/realms/pulse
       Auth__RequireHttpsMetadata: "false"
+    depends_on:
+      - keycloak
+
+  # The address of the identity provider is baked into the dashboard at build time, as seen from the browser.
+  web:
+    build:
+      args:
+        VITE_AUTH_AUTHORITY: http://localhost:8180/realms/pulse
+        VITE_AUTH_CLIENT_ID: pulse-web
     depends_on:
       - keycloak
 

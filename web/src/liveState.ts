@@ -1,4 +1,4 @@
-import type { Alert, Reading } from './types'
+import { channelOf, type Alert, type Reading } from './types'
 
 export interface LivePoint {
   t: number
@@ -26,11 +26,11 @@ export function isNewer(incoming: Reading, current: Reading | undefined): boolea
   return !current || Date.parse(incoming.timestamp) > Date.parse(current.timestamp)
 }
 
-const alertId = (a: Alert) => `${a.deviceId}|${a.metric}|${a.rule}|${a.state}|${a.timestamp}`
+const alertId = (a: Alert) => `${a.deviceId}|${channelOf(a)}|${a.metric}|${a.rule}|${a.state}|${a.timestamp}`
 
 /**
  * Puts a pushed batch at the top of the feed, newest first, skipping alerts the feed already has.
- * The same state change is identical on redelivery, so device, metric, rule, state and timestamp identify it.
+ * The same state change is identical on redelivery, so device, channel, metric, rule, state and timestamp identify it.
  */
 export function mergeAlerts(existing: readonly Alert[], pushed: readonly Alert[], max: number): Alert[] {
   const seen = new Set(existing.map(alertId))

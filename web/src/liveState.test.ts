@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { appendPoint, isNewer, mergeAlerts, type LivePoint } from './liveState'
-import type { Alert, Reading } from './types'
+import { channelOf, seriesKey, type Alert, type Reading } from './types'
 
 const reading = (timestamp: string, value = 20): Reading => ({ deviceId: 'dev-1', metric: 'temperature', value, timestamp })
 
@@ -136,5 +136,30 @@ describe('mergeAlerts', () => {
     expect(feed).toHaveLength(3)
     expect(feed[0].deviceId).toBe('dev-1')
     expect(feed.at(-1)?.deviceId).toBe('old-2')
+  })
+})
+
+describe('channels', () => {
+  it('names the channel after the metric when a reading has none', () => {
+    expect(channelOf({ metric: 'temperature' })).toBe('temperature')
+    expect(channelOf({ metric: 'temperature', channel: null })).toBe('temperature')
+    expect(channelOf({ metric: 'soil_moisture', channel: 'soil-2' })).toBe('soil-2')
+  })
+
+  it('keeps two channels of one metric on one device apart', () => {
+    expect(seriesKey('pot-1', 'soil-1')).not.toBe(seriesKey('pot-1', 'soil-2'))
+  })
+
+  it('treats the same alert on two channels as two alerts', () => {
+    const first = alert({ metric: 'soil_moisture', channel: 'soil-1' })
+    const second = alert({ metric: 'soil_moisture', channel: 'soil-2' })
+
+    expect(mergeAlerts([first], [second], 10)).toEqual([second, first])
+  })
+
+  it('still drops a repeat of an alert on the same channel', () => {
+    const one = alert({ metric: 'soil_moisture', channel: 'soil-1' })
+
+    expect(mergeAlerts([one], [{ ...one }], 10)).toEqual([one])
   })
 })

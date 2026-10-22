@@ -239,7 +239,9 @@ curl -s localhost:5080/api/pulse/v2/devices -H "Authorization: Bearer $SERVICE" 
 curl -s localhost:5080/api/pulse/v2/devices -H "Authorization: Bearer $ALICE"     # only alice's
 ```
 
-The simulator gets its own service token. The dashboard has no login yet, so with authentication on it shows nothing.
+The simulator gets its own service token.
+
+The dashboard signs in through Keycloak (authorization code flow with PKCE, client `pulse-web`) when the web image is built with `VITE_AUTH_AUTHORITY`, which the auth override does. Sign in as `alice` or `bob` (password = name) and it shows only the devices that person owns, live and in the alert feed. A device nobody claimed, such as the simulator's, is visible to service callers only, so it does not appear. The session lives in the tab (session storage) and signing out also ends the Keycloak session. Without the build argument there is no login, which is how the plain stack runs. `web/e2e/auth.spec.ts` covers it and runs with `PULSE_AUTH_E2E=1` against the auth stack.
 
 ## Observability
 
@@ -309,7 +311,8 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 - Rules are read from the database for every batch, one query per batch like the owner lookup. If the rate of batches grows, a short cache is the first thing to add.
 - Changing the no-data timeout of a channel that is already silent resolves its alert and raises a new one under the new timeout.
 - Calibration is stored but not applied: a soil moisture sensor has to send percentages, not raw ADC counts, or the range check will refuse it.
-- The dashboard shows one button per metric, so two channels of one metric on the same device are drawn as one until the dashboard learns about channels. The API and storage already keep them apart.
+- The dashboard shows one button per channel, named after the metric when a device has one sensor per metric and `channel · metric` otherwise.
+- The token is renewed in the background with the refresh token. If renewing fails the dashboard returns to the login; a running live connection keeps the token it was opened with until it reconnects.
 - Telemetry for a device that was never registered is still accepted, so the standalone demo works as before. The registry does not gate ingestion, except that a retired device is refused.
 
 ## Layout

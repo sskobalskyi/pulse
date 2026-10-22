@@ -37,7 +37,24 @@
   "metrics": {
     "temperature": "Температура",
     "humidity": "Вологість",
-    "battery": "Батарея"
+    "battery": "Батарея",
+    "air_humidity": "Вологість повітря",
+    "soil_moisture": "Вологість ґрунту",
+    "ph": "pH",
+    "light": "Освітлення",
+    "airflow": "Повітряний потік",
+    "tank_level": "Рівень у баку",
+    "overflow": "Переповнення",
+    "flow": "Витрата"
   },
-  "language": "Мова"
+  "language": "Мова",
+  "auth": {
+    "title": "Вхід у Pulse",
+    "description": "Дашборд показує пристрої, якими ви володієте.",
+    "signIn": "Увійти",
+    "signOut": "Вийти",
+    "checking": "Перевіряємо сесію…",
+    "failed": "Не вдалося увійти. Спробуйте ще раз.",
+    "signedInAs": "Ви увійшли як {{name}}"
+  }
 }

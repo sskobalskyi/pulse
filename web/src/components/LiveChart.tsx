@@ -7,7 +7,7 @@ import type { LivePoint } from '../liveState'
 
 interface Props {
   deviceId: string
-  metric: string
+  channel: string
   live: readonly LivePoint[]
 }
 
@@ -20,13 +20,13 @@ function merge(history: LivePoint[], live: readonly LivePoint[]): uPlot.AlignedD
   return [points.map((p) => p.t), points.map((p) => p.v)]
 }
 
-export function LiveChart({ deviceId, metric, live }: Props) {
+export function LiveChart({ deviceId, channel, live }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const plot = useRef<uPlot | null>(null)
 
   const { data: history = [] } = useQuery({
-    queryKey: ['series', deviceId, metric],
-    queryFn: async () => (await fetchSeries(deviceId, metric, HISTORY_MINUTES)).map((p) => ({ t: Date.parse(p.timestamp) / 1000, v: p.avg })),
+    queryKey: ['series', deviceId, channel],
+    queryFn: async () => (await fetchSeries(deviceId, channel, HISTORY_MINUTES)).map((p) => ({ t: Date.parse(p.timestamp) / 1000, v: p.avg })),
     staleTime: Number.POSITIVE_INFINITY,
   })
 
@@ -62,11 +62,11 @@ export function LiveChart({ deviceId, metric, live }: Props) {
       plot.current?.destroy()
       plot.current = null
     }
-  }, [deviceId, metric])
+  }, [deviceId, channel])
 
   useEffect(() => {
     plot.current?.setData(merge(history, live))
   }, [history, live])
 
-  return <div ref={host} className="chart w-full" role="img" aria-label={`${deviceId} ${metric}`} />
+  return <div ref={host} className="chart w-full" role="img" aria-label={`${deviceId} ${channel}`} />
 }
