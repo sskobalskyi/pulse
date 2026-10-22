@@ -6,6 +6,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Pulse.Api.Auth;
 using Pulse.Api.Endpoints;
+using Pulse.Api.Events;
 using Pulse.Api.Hubs;
 using Pulse.Api.Messaging;
 using Pulse.Api.Observability;
@@ -25,6 +26,12 @@ builder.Services.AddSingleton<PulseDb>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DeviceRegistry>();
 builder.Services.AddSingleton<DeviceRuleStore>();
+
+// Integration events. Everything here stays idle unless Events:Enabled is true, so Pulse runs on its own without a broker.
+builder.Services.AddOptions<EventsOptions>().BindConfiguration("Events");
+builder.Services.AddSingleton<EventOutbox>();
+builder.Services.AddSingleton<IEventBus, RabbitMqEventBus>();
+builder.Services.AddSingleton<OutboxRelay>();
 builder.Services.AddSingleton<LiveFanout>();
 
 builder.Services.AddPulseAuth();
@@ -50,6 +57,9 @@ builder.Services.AddHostedService<TimescaleWriter>();
 builder.Services.AddHostedService<LivePublisher>();
 builder.Services.AddHostedService<AlertEvaluator>();
 builder.Services.AddHostedService<SilenceMonitor>();
+// After the migration like everything that touches the database: the relay reads the outbox table, the consumer registers devices.
+builder.Services.AddHostedService<OutboxPublisher>();
+builder.Services.AddHostedService<DeviceAllocatedConsumer>();
 
 builder.Services.AddSignalR();
 // Every problem response carries a stable `code`, as the v2 contract requires, including framework-generated ones.

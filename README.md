@@ -18,6 +18,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Channels:** a series is a device, a metric and a channel, so one device can have several sensors of the same kind (a soil moisture sensor per zone). Alerts, no-data detection and charts work per channel. Readings of known metrics are checked against a plausible range, and a registered device's readings must fit the channels it declared. See [Channels and metrics](#channels-and-metrics).
 - **Device registry:** devices are registered before they send data and move through `allocated`, `shipped`, `claimed`, `active`, `retired`. Claiming uses a one-time, expiring token that is stored only as a hash and is rate limited. Retiring a device stops its no-data alerts. See [Device registry and authentication](#device-registry-and-authentication).
 - **Alert rules per device:** each channel of a device can have a threshold rule (range and hysteresis margin) and a no-data timeout of its own, set over the API. A channel without one uses the platform's rules for its metric. See [Alert rules](#alert-rules).
+- **Integration events:** alerts, device status and retirements are published to RabbitMQ through a transactional outbox, and devices are registered from `device.allocated.v1`. Off by default. See [Integration events](#integration-events).
 - **Authentication:** Keycloak JWTs behind a switch. Service callers manage the registry, users see only the devices they own.
 - **Schema migrations:** plain SQL files applied by the API on startup, with an existing database adopted rather than rebuilt ([ADR 0002](docs/adr/0002-sql-migrations-on-startup.md)).
 - **Contract tests:** responses are validated against `contracts/pulse-device-api.yaml`, the OpenAPI document that the rest of the system is built against.
@@ -187,6 +188,36 @@ A device's rules say what is normal for each of its channels. They are stored wi
   a restart, because the state is restored from storage.
 - Only a service caller sets rules. Greenhaus turns a pot's requirements into them, and letting anyone write them straight to Pulse would bypass what a tier may have.
 
+### Integration events
+
+Other systems learn what happens in Pulse through events on RabbitMQ, as [`contracts/integration-events.yaml`](contracts/integration-events.yaml) defines
+them. They are off by default, so Pulse runs alone without a broker. To turn them on with a local RabbitMQ:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.events.yml up --build
+```
+
+(management UI on http://localhost:15673, user and password `pulse`). Every event goes to the topic exchange `integration.events`
+with its name as the routing key, a persistent message, and the headers the contract asks for: `messageId`, `occurredAt`, `schemaVersion` and
+`traceparent`. A queue that wants a family of events binds with `#`, for example `alert.#`, because `*` matches only one word of the three in `alert.raised.v1`.
+
+| Event | Published when | Notes |
+| --- | --- | --- |
+| `alert.raised.v1`, `alert.resolved.v1` | an alert changes state | One `alertId` for the raised and the resolved event of the same alert. `direction` (below or above) only on raised. A no-data alert has no `value`. |
+| `device.status.v1` | a device goes offline or comes back | Online while any channel reports within its no-data timeout, offline when all are quiet. Cause `no_data` or `reconnect`. `last_will` comes with the MQTT bridge. A device that never reports is not announced. |
+| `device.retired.v1` | a device is retired | Once, not again on a repeated retire. |
+| `device.allocated.v1` (consumed) | | Registers the device. Receiving it twice changes nothing. |
+
+**Outbox.** An event is written to the `outbox` table in the same transaction as the change it describes, and a background relay publishes it afterwards. Publishing after the commit
+would lose an event if the process died in between, and publishing before would announce something that then fails to commit. A change that is stored again (a redelivered Kafka batch)
+is not announced again. Delivery is **at least once**: if Pulse dies after the broker took a message but before the row was marked, the message goes out again with the same `messageId`,
+so consumers deduplicate on it. The relay keeps order, stops at the first failure and tries again, and with several instances rows are locked with `SKIP LOCKED` so nothing goes out twice
+because of that. Published rows are removed after 7 days. See [ADR 0006](docs/adr/0006-integration-events-and-outbox.md).
+
+**Consuming.** `device.allocated.v1` is read from the queue `pulse.device-allocated`. A message that can never succeed (not JSON, not what the contract describes, a registration the registry refuses)
+is rejected without a retry and lands in the dead-letter queue `pulse.dead-letters`, where a person can read it, and the messages behind it carry on. A failure that may pass, such as the database
+being down, is tried again after a pause.
+
 ### Running with authentication
 
 Authentication is off by default, so the demo needs nothing else. To turn it on with a local Keycloak:
@@ -270,6 +301,9 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 - With authentication on, the dashboard endpoints (`/api/devices`, `/api/alerts`, series) and the live hub are scoped to the caller's devices like the registry is. A device nobody has claimed, including every device of the demo simulator, is visible to service callers only. The live push looks up the owners of each batch, so it costs one indexed query per batch.
 - Claim attempt counters are in memory of one instance, so with several instances the real limit is multiplied by their number.
 - Ingestion does more per request now: a retired check and a declared-channels lookup, two small indexed queries per batch. Measured with the k6 smoke test, the ingest p95 went from about 12 ms to about 14 ms.
+- Events are announced from the leader's silence round and from the alert evaluator of whichever instance owns the partition, and every instance runs the relay. The outbox is shared, so this is safe, but device status events can lag by up to a check interval.
+- Without the broker's last will, "offline" is only noticed after the no-data timeout, and "online" when the next reading is processed, up to a check interval later.
+- There is no inbox: `device.allocated.v1` is safe to receive twice because registering is idempotent on the device id. A second message for the same device with different content is ignored, the first registration wins.
 - Rules cannot switch an alert **off** for a channel that the platform has a default for: a channel always has the platform's rule or one of its own. A threshold rule with a very wide range is the way to say "never".
 - Rules are read from the database for every batch, one query per batch like the owner lookup. If the rate of batches grows, a short cache is the first thing to add.
 - Changing the no-data timeout of a channel that is already silent resolves its alert and raises a new one under the new timeout.

@@ -1,11 +1,13 @@
 using Dapper;
 using Npgsql;
 using NpgsqlTypes;
+using Pulse.Api.Events;
 using Pulse.Core;
 
 namespace Pulse.Api.Storage;
 
-public sealed class PulseDb(NpgsqlDataSource dataSource)
+/// <param name="outbox">Where events about what is stored go, in the same transaction. Null in tests that do not care.</param>
+public sealed class PulseDb(NpgsqlDataSource dataSource, EventOutbox? outbox = null)
 {
     /// <summary>The most points a raw series answers with, so one request cannot ask for millions of rows.</summary>
     public const int MaxRawPoints = 10_000;
@@ -36,27 +38,100 @@ public sealed class PulseDb(NpgsqlDataSource dataSource)
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    /// <summary>
+    /// Stores alert state changes, and the integration event for each, in one transaction. An alert that is already stored
+    /// (the same change reprocessed after a redelivery) is skipped, and so is its event, so each change is announced once.
+    /// A resolved alert carries the id of the raised alert it ends, which is how a consumer ties the two events together.
+    /// </summary>
     public async Task InsertAlertsAsync(IReadOnlyList<Alert> alerts, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
-        await conn.ExecuteAsync(new CommandDefinition(
-            """
-            INSERT INTO alerts (device_id, channel, metric, rule, value, ts, state, kind)
-            VALUES (@DeviceId, @Channel, @Metric, @Rule, @Value, @Timestamp, @State, @Kind)
-            ON CONFLICT (device_id, channel, rule, ts, state) DO NOTHING
-            """,
-            alerts.Select(a => new
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        foreach (var alert in alerts)
+        {
+            await using var insert = new NpgsqlCommand("""
+                INSERT INTO alerts (device_id, channel, metric, rule, value, ts, state, kind, alert_id)
+                VALUES (@deviceId, @channel, @metric, @rule, @value, @ts, @state, @kind,
+                        CASE WHEN @state = 'Resolved'
+                             THEN COALESCE((SELECT r.alert_id FROM alerts r
+                                            WHERE r.device_id = @deviceId AND r.channel = @channel AND r.rule = @rule
+                                              AND r.state = 'Raised' AND r.ts <= @ts
+                                            ORDER BY r.ts DESC LIMIT 1), gen_random_uuid())
+                             ELSE gen_random_uuid() END)
+                ON CONFLICT (device_id, channel, rule, ts, state) DO NOTHING
+                RETURNING alert_id
+                """, conn, tx);
+            insert.Parameters.AddWithValue("deviceId", alert.DeviceId);
+            insert.Parameters.AddWithValue("channel", alert.ChannelId);
+            insert.Parameters.AddWithValue("metric", alert.Metric);
+            insert.Parameters.AddWithValue("rule", alert.Rule);
+            insert.Parameters.AddWithValue("value", alert.Value);
+            insert.Parameters.AddWithValue("ts", alert.Timestamp.UtcDateTime);
+            insert.Parameters.AddWithValue("state", alert.State.ToString());
+            insert.Parameters.AddWithValue("kind", alert.Kind.ToString());
+
+            if (await insert.ExecuteScalarAsync(ct) is not Guid alertId) continue; // already stored, already announced
+
+            if (outbox is { Enabled: true })
             {
-                a.DeviceId,
-                Channel = a.ChannelId,
-                a.Metric,
-                a.Rule,
-                a.Value,
-                a.Timestamp,
-                State = a.State.ToString(),
-                Kind = a.Kind.ToString(),
-            }),
-            cancellationToken: ct));
+                var (routingKey, payload) = IntegrationEvents.ForAlert(alert, alertId);
+                await outbox.AddAsync(conn, tx, routingKey, payload, alert.Timestamp, ct);
+            }
+        }
+
+        await tx.CommitAsync(ct);
+    }
+
+    /// <summary>
+    /// Reports devices that went offline or came back online, as events, and remembers what was reported so each change is
+    /// reported once, also across restarts. A device is online while any of its channels has reported within its no-data
+    /// timeout, and offline when every one of them is quiet for longer. Only devices in service that have reported at all
+    /// are considered. Returns how many changes were reported. Call it from one place at a time, as the silence monitor does.
+    /// </summary>
+    public async Task<int> ReconcileDeviceStatusAsync(TimeSpan defaultTimeout, DateTimeOffset now, CancellationToken ct)
+    {
+        if (outbox is not { Enabled: true }) return 0;
+
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        var changes = new List<(string DeviceId, string Old, bool Online)>();
+        await using (var select = new NpgsqlCommand("""
+            SELECT d.id, d.reported_status,
+                   bool_or(s.last_seen_at >= now() - COALESCE(make_interval(secs => r.timeout_seconds), @timeout)) AS online
+            FROM devices d
+            JOIN device_last_seen s ON s.device_id = d.id
+            LEFT JOIN device_rules r ON r.device_id = s.device_id AND r.channel_id = s.channel AND r.kind = 'no_data'
+            WHERE d.state IN ('claimed', 'active')
+            GROUP BY d.id, d.reported_status
+            """, conn, tx))
+        {
+            select.Parameters.AddWithValue("timeout", defaultTimeout);
+            await using var reader = await select.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var online = reader.GetBoolean(2);
+                if (reader.GetString(1) != (online ? "online" : "offline")) changes.Add((reader.GetString(0), reader.GetString(1), online));
+            }
+        }
+
+        var reported = 0;
+        foreach (var (deviceId, old, online) in changes)
+        {
+            await using var update = new NpgsqlCommand("UPDATE devices SET reported_status = @new WHERE id = @id AND reported_status = @old", conn, tx);
+            update.Parameters.AddWithValue("id", deviceId);
+            update.Parameters.AddWithValue("old", old);
+            update.Parameters.AddWithValue("new", online ? "online" : "offline");
+            if (await update.ExecuteNonQueryAsync(ct) == 0) continue;
+
+            // Without the broker's last will, silence is the only way to know a device went away, and its next reading is how it came back.
+            await outbox.AddAsync(conn, tx, EventNames.DeviceStatus, IntegrationEvents.ForStatus(deviceId, online, now, online ? "reconnect" : "no_data"), now, ct);
+            reported++;
+        }
+
+        await tx.CommitAsync(ct);
+        return reported;
     }
 
     /// <summary>The (device, channel, rule) combinations of one kind whose most recent alert is still Raised.</summary>
