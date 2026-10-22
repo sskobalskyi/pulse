@@ -4,11 +4,24 @@ import { useTranslation } from 'react-i18next'
 import { LiveChart } from './components/LiveChart'
 import { LOCALES } from './i18n'
 import { fetchDevices } from './api'
-import { seriesKey, type Alert } from './types'
+import { seriesKey, type Alert, type ConnectionStatus } from './types'
 import { useLive } from './useLive'
-import './App.css'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
+import { cn } from '@/lib/utils'
 
 const STATUS_POLL_MS = 5000
+
+const STATUS_DOT: Record<ConnectionStatus, string> = {
+  connecting: 'bg-amber-500',
+  live: 'bg-emerald-500',
+  reconnecting: 'bg-amber-500',
+  offline: 'bg-muted-foreground',
+}
 
 interface Row {
   deviceId: string
@@ -51,106 +64,132 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <header>
+    <div className="mx-auto flex max-w-[1400px] flex-col gap-4 p-4">
+      <header className="flex items-center justify-between gap-4">
         <div>
-          <h1>{t('app.title')}</h1>
-          <p className="muted">{t('app.subtitle')}</p>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('app.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('app.subtitle')}</p>
         </div>
-        <div className="header-controls">
-          <span className={`status status-${status}`} role="status">
-            <span className="dot" aria-hidden="true" />
+        <div className="flex items-center gap-3">
+          <Badge variant="outline" role="status" className="gap-1.5">
+            <span className={cn('size-2 rounded-full', STATUS_DOT[status])} aria-hidden="true" />
             {t(`status.${status}`)}
-          </span>
-          <label className="language">
-            <span className="sr-only">{t('language')}</span>
-            <select value={language} onChange={(e) => void i18n.changeLanguage(e.target.value)}>
+          </Badge>
+          <Select value={language} onValueChange={(l) => void i18n.changeLanguage(l as string)}>
+            <SelectTrigger size="sm" aria-label={t('language')}>
+              <SelectValue>{language.toUpperCase()}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
               {LOCALES.map((l) => (
-                <option key={l} value={l}>
+                <SelectItem key={l} value={l}>
                   {l.toUpperCase()}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-          </label>
+            </SelectContent>
+          </Select>
         </div>
       </header>
 
-      <main>
-        <section className="panel devices" aria-labelledby="devices-title">
-          <h2 id="devices-title">{t('devices.title')}</h2>
-          <input
-            type="search"
-            placeholder={t('devices.filter')}
-            aria-label={t('devices.filter')}
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
-          {devices.length === 0 ? (
-            <p className="muted">{t('devices.empty')}</p>
-          ) : (
-            <ul>
-              {devices.map(([deviceId, readings]) => (
-                <li key={deviceId}>
-                  <strong>{deviceId}</strong>
-                  <div className="metrics">
-                    {readings
-                      .slice()
-                      .sort((a, b) => a.metric.localeCompare(b.metric))
-                      .map((r) => {
-                        const isSelected = selected?.deviceId === deviceId && selected.metric === r.metric
-                        return (
-                          <button
-                            key={r.metric}
-                            className={`metric${isSelected ? ' selected' : ''}${r.silent ? ' silent' : ''}`}
-                            aria-pressed={isSelected}
-                            onClick={() => setSelected({ deviceId, metric: r.metric })}
-                          >
-                            <span className="muted">{metricLabel(r.metric)}</span>
-                            <span className="value">{r.value === null ? '—' : r.value.toFixed(1)}</span>
-                            {r.silent && <span className="silent-label">{t('devices.silent')}</span>}
-                          </button>
-                        )
-                      })}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      <main className="grid items-start gap-4 lg:grid-cols-[320px_1fr_320px]">
+        <Card aria-labelledby="devices-title">
+          <CardHeader>
+            <h2 id="devices-title" className="font-heading text-base font-medium">
+              {t('devices.title')}
+            </h2>
+          </CardHeader>
+          <CardContent className="flex max-h-[80vh] flex-col gap-3 overflow-y-auto">
+            <Input
+              type="search"
+              placeholder={t('devices.filter')}
+              aria-label={t('devices.filter')}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+            {devices.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t('devices.empty')}</p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {devices.map(([deviceId, readings], n) => (
+                  <li key={deviceId} className="flex flex-col gap-2">
+                    {n > 0 && <Separator />}
+                    <strong className="text-sm">{deviceId}</strong>
+                    <div className="flex flex-wrap gap-2">
+                      {readings
+                        .slice()
+                        .sort((a, b) => a.metric.localeCompare(b.metric))
+                        .map((r) => {
+                          const isSelected = selected?.deviceId === deviceId && selected.metric === r.metric
+                          return (
+                            <Button
+                              key={r.metric}
+                              variant={isSelected ? 'default' : 'outline'}
+                              className={cn('h-auto flex-col items-start gap-0.5 px-3 py-2', r.silent && 'opacity-60')}
+                              aria-pressed={isSelected}
+                              onClick={() => setSelected({ deviceId, metric: r.metric })}
+                            >
+                              <span className="text-xs font-normal opacity-70">{metricLabel(r.metric)}</span>
+                              <span className="text-lg font-semibold tabular-nums">{r.value === null ? '—' : r.value.toFixed(1)}</span>
+                              {r.silent && <span className="text-xs font-normal text-amber-600 dark:text-amber-400">{t('devices.silent')}</span>}
+                            </Button>
+                          )
+                        })}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
 
-        <section className="panel chart-panel">
-          {selected ? (
-            <>
-              <h2>{t('chart.title', { device: selected.deviceId, metric: metricLabel(selected.metric) })}</h2>
+        <Card>
+          <CardHeader>
+            {selected && (
+              <h2 className="font-heading text-base font-medium">
+                {t('chart.title', { device: selected.deviceId, metric: metricLabel(selected.metric) })}
+              </h2>
+            )}
+          </CardHeader>
+          <CardContent>
+            {selected ? (
               <LiveChart
                 deviceId={selected.deviceId}
                 metric={selected.metric}
                 live={buffers.get(seriesKey(selected.deviceId, selected.metric)) ?? []}
               />
-            </>
-          ) : (
-            <p className="muted">{t('chart.select')}</p>
-          )}
-        </section>
+            ) : (
+              <p className="text-sm text-muted-foreground">{t('chart.select')}</p>
+            )}
+          </CardContent>
+        </Card>
 
-        <section className="panel alerts" aria-labelledby="alerts-title">
-          <h2 id="alerts-title">{t('alerts.title')}</h2>
-          {alerts.length === 0 ? (
-            <p className="muted">{t('alerts.empty')}</p>
-          ) : (
-            <ul>
-              {alerts.map((a, i) => (
-                <li key={`${a.deviceId}-${a.metric}-${a.timestamp}-${i}`}>
-                  <strong>{a.deviceId}</strong> · {metricLabel(a.metric)}{' '}
-                  <span className={`badge badge-${a.state.toLowerCase()}`}>{t(`alerts.state.${a.state}`)}</span>
-                  <div className="muted">
-                    {alertDetail(a)} ·{new Date(a.timestamp).toLocaleTimeString(i18n.language)}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <Card aria-labelledby="alerts-title">
+          <CardHeader>
+            <h2 id="alerts-title" className="font-heading text-base font-medium">
+              {t('alerts.title')}
+            </h2>
+          </CardHeader>
+          <CardContent className="max-h-[80vh] overflow-y-auto">
+            {alerts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t('alerts.empty')}</p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {alerts.map((a, i) => (
+                  <li key={`${a.deviceId}-${a.metric}-${a.timestamp}-${i}`} className="flex flex-col gap-1 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>
+                        <strong>{a.deviceId}</strong> · {metricLabel(a.metric)}
+                      </span>
+                      <Badge variant={a.state === 'Raised' ? 'destructive' : 'secondary'}>{t(`alerts.state.${a.state}`)}</Badge>
+                    </div>
+                    <span className="text-muted-foreground">
+                      {alertDetail(a)} · {new Date(a.timestamp).toLocaleTimeString(i18n.language)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </main>
     </div>
   )

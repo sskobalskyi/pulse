@@ -33,9 +33,9 @@ export function LiveChart({ deviceId, metric, live }: Props) {
   useEffect(() => {
     if (!host.current) return
     const style = getComputedStyle(host.current)
-    const accent = style.getPropertyValue('--accent').trim() || '#2f6fed'
+    const accent = style.getPropertyValue('--primary').trim() || '#2f6fed'
     const grid = style.getPropertyValue('--border').trim() || '#8884'
-    const text = style.getPropertyValue('--muted').trim() || '#888'
+    const text = style.getPropertyValue('--muted-foreground').trim() || '#888'
 
     const axis = { stroke: text, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 } }
     plot.current = new uPlot(
@@ -68,5 +68,5 @@ export function LiveChart({ deviceId, metric, live }: Props) {
     plot.current?.setData(merge(history, live))
   }, [history, live])
 
-  return <div ref={host} className="chart" role="img" aria-label={`${deviceId} ${metric}`} />
+  return <div ref={host} className="chart w-full" role="img" aria-label={`${deviceId} ${metric}`} />
 }
