@@ -19,7 +19,8 @@ test('switches the UI to Ukrainian and remembers it', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Devices' })).toBeVisible()
 
-  await page.getByRole('combobox').selectOption('uk')
+  await page.getByRole('combobox').click()
+  await page.getByRole('option', { name: 'UK' }).click()
   await expect(page.getByRole('heading', { name: 'Пристрої' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Сповіщення' })).toBeVisible()
 
