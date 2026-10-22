@@ -172,7 +172,7 @@ public sealed class DeviceRegistryTests : IAsyncLifetime
         await _db.TouchLastSeenAsync([Reading()], default);
         Assert.Equal("online", (await shortLived.GetAsync("dev-1", null, default))!.Connection);
 
-        await Task.Delay(TimeSpan.FromSeconds(3.5));
+        await DbClock.DelayAsync(_dataSource, TimeSpan.FromSeconds(3.5));
         Assert.Equal("offline", (await shortLived.GetAsync("dev-1", null, default))!.Connection);
     }
 

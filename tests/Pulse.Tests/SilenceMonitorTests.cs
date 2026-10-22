@@ -53,7 +53,7 @@ public sealed class SilenceMonitorTests : IAsyncLifetime
     private async Task MakeDeviceSilent()
     {
         await _db.TouchLastSeenAsync([new TelemetryReading("dev-1", "temperature", 20, DateTimeOffset.UtcNow)], default);
-        await Task.Delay(Timeout + TimeSpan.FromMilliseconds(500));
+        await DbClock.DelayAsync(_dataSource, Timeout + TimeSpan.FromMilliseconds(500));
     }
 
     private async Task<Alert[]> NoDataAlerts() =>

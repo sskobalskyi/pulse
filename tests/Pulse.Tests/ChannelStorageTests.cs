@@ -94,7 +94,7 @@ public sealed class ChannelStorageTests : IAsyncLifetime
     public async Task Last_seen_is_tracked_per_channel_so_one_silent_sensor_is_noticed()
     {
         await _db.TouchLastSeenAsync([Soil("soil-1", 40), Soil("soil-2", 55)], default);
-        await Task.Delay(TimeSpan.FromSeconds(1.5));
+        await DbClock.DelayAsync(_dataSource, TimeSpan.FromSeconds(1.5));
         await _db.TouchLastSeenAsync([Soil("soil-2", 56)], default); // only zone 2 keeps reporting
 
         var silent = Assert.Single(await _db.GetSilentSeriesAsync(TimeSpan.FromSeconds(1), default));
