@@ -3,7 +3,7 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { useQuery } from '@tanstack/react-query'
 import { fetchSeries } from '../api'
-import type { LivePoint } from '../useLive'
+import type { LivePoint } from '../liveState'
 
 interface Props {
   deviceId: string
