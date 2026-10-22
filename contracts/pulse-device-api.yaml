@@ -223,6 +223,9 @@ paths:
       tags: [Rules]
       operationId: getRules
       summary: Alert rules of a device
+      description: |
+        The rules the device has of its own, ordered by channel. A channel that is not listed uses the platform's
+        rules for its metric. An owner can read the rules of their own devices, a service caller any.
       responses:
         '200':
           description: Rules
@@ -236,7 +239,23 @@ paths:
       tags: [Rules]
       operationId: setRules
       summary: Replace the alert rules of a device
-      description: Threshold rules with a hysteresis margin, per channel. A no-data timeout can be set per channel.
+      description: |
+        Service callers only: Greenhaus turns a pot's requirements into rules and decides what a tier may have, so
+        a user cannot write rules to Pulse directly, not even for their own device.
+
+        The list **replaces** every rule the device has. An empty list removes them, which puts the device back on the
+        platform's rules. The list is validated as a whole and nothing changes if any rule is wrong (`400`, every
+        problem named in `detail`).
+
+        A channel has at most one rule of each kind, and only for a channel the device declared (`400`, code
+        `unknown_channel`). A **threshold** needs `min`, `max` or both, `min` below `max`, and a `margin` that is
+        less than half of `max - min` when both are given, since the margin is taken off each side and otherwise
+        the alert could never clear. A **no_data** rule needs `timeoutSeconds`, and no bounds or margin.
+
+        A channel with a threshold rule of its own uses only that. A channel without one uses the platform's rules for
+        its metric, so a device that never had rules behaves as before, and a metric the platform has no rule for
+        (soil moisture, for instance) has no alert until it is given one. A rule applies from the next reading.
+        Changing or removing a threshold rule resolves the alert that was raised under the old one.
       requestBody:
         required: true
         content:
@@ -252,8 +271,17 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Rule' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: The rules are invalid. Codes `validation_failed` and `unknown_channel`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The device is retired and takes no new rules (code `invalid_state`). Its rules can still be read.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /devices/{deviceId}/commands:
     parameters:
@@ -554,14 +582,26 @@ components:
         ownerId: { type: string, description: Keycloak subject of the new owner }
     Rule:
       type: object
+      description: |
+        A rule of one channel. `threshold` uses `min`, `max` and `margin`. `no_data` uses `timeoutSeconds`. The other
+        kind's fields must be absent. Fields that were not set are left out of responses, not returned as null.
       required: [channelId, kind]
       properties:
-        channelId: { type: string }
+        channelId: { type: string, description: A channel the device declared }
         kind: { type: string, enum: [threshold, no_data] }
-        min: { type: number }
-        max: { type: number }
-        margin: { type: number, minimum: 0 }
-        timeoutSeconds: { type: integer, minimum: 10 }
+        min: { type: number, description: The lowest value that is fine. A value below it raises the alert. }
+        max: { type: number, description: The highest value that is fine. A value above it raises the alert. }
+        margin:
+          type: number
+          minimum: 0
+          description: |
+            How far back inside the range a value has to come before the alert clears, so a value hovering at a
+            bound does not flap. Defaults to 0. Less than half of `max - min` when both bounds are given.
+        timeoutSeconds:
+          type: integer
+          minimum: 10
+          maximum: 604800
+          description: How long the channel may stay quiet before a no-data alert is raised. At most a week.
     CommandRequest:
       type: object
       required: [commandId, type, actuatorId, expiresAt]
