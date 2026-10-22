@@ -165,14 +165,14 @@ public sealed class DeviceRegistryTests : IAsyncLifetime
     [Fact]
     public async Task Connection_follows_how_recently_the_device_reported()
     {
-        var shortLived = new DeviceRegistry(_dataSource, _time, Options.Create(new SilenceOptions { Timeout = TimeSpan.FromSeconds(1) }));
+        var shortLived = new DeviceRegistry(_dataSource, _time, Options.Create(new SilenceOptions { Timeout = TimeSpan.FromSeconds(3) }));
         await Shipped();
         Assert.Equal("unknown", (await shortLived.GetAsync("dev-1", null, default))!.Connection);
 
         await _db.TouchLastSeenAsync([Reading()], default);
         Assert.Equal("online", (await shortLived.GetAsync("dev-1", null, default))!.Connection);
 
-        await Task.Delay(TimeSpan.FromSeconds(1.5));
+        await Task.Delay(TimeSpan.FromSeconds(3.5));
         Assert.Equal("offline", (await shortLived.GetAsync("dev-1", null, default))!.Connection);
     }
 

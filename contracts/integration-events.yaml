@@ -135,7 +135,7 @@ operations:
   consumeDeviceClaimed:
     action: receive
     channel: { $ref: '#/channels/deviceClaimed' }
-    summary: Orderflow shows the order as activated, Docs-Brain learns which devices a household has.
+    summary: Orderflow shows the order as activated when the event names it, Docs-Brain learns which devices a household has.
   publishDeviceRetired:
     action: send
     channel: { $ref: '#/channels/deviceRetired' }
@@ -301,12 +301,18 @@ components:
       headers: { $ref: '#/components/schemas/Headers' }
       payload:
         type: object
-        required: [deviceId, ownerId, potId, orderId, claimedAt]
+        required: [deviceId, ownerId, potId, claimedAt]
         properties:
           deviceId: { type: string }
           ownerId: { type: string }
           potId: { type: string, format: uuid }
-          orderId: { type: string, format: uuid }
+          orderId:
+            type: string
+            format: uuid
+            description: |
+              The order the device was bought in. Absent for a device that was not sold through the marketplace, such
+              as a do-it-yourself build, which the set-up guide explicitly allows. Consumers that need the order, such
+              as the one that shows an order as activated, ignore the event when it is missing.
           claimedAt: { type: string, format: date-time }
     DeviceRetired:
       name: device.retired.v1

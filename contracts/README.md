@@ -6,7 +6,7 @@ on its own. They are verbatim, never edited here: a change belongs in `greenhaus
 
 | File | Source in `greenhaus` | Copied from commit |
 | --- | --- | --- |
-| `integration-events.yaml` | `contracts/asyncapi/integration-events.yaml` | `e36d942` (2026-10-21) |
+| `integration-events.yaml` | `contracts/asyncapi/integration-events.yaml` | `12671fb` (2026-10-22), `orderId` of `device.claimed.v1` became optional (greenhaus#8) |
 | `pulse-device-api.yaml` | `contracts/openapi/pulse-device-api.yaml` | `e36d942` (2026-10-21), the merge of the contract fixes found while building this API (greenhaus#5) |
 
 `dotnet test` validates the payload and headers of the events Pulse publishes, and the one it consumes, against `integration-events.yaml`, and real responses against `pulse-device-api.yaml` (`tests/Pulse.Tests/OpenApiContract.cs`):
