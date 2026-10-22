@@ -153,7 +153,7 @@ public sealed class PulseDbTests : IAsyncLifetime
     public async Task Only_series_that_stopped_reporting_are_silent()
     {
         await _db.TouchLastSeenAsync([new TelemetryReading("dev-old", "temperature", 20, T0)], default);
-        await Task.Delay(1500);
+        await DbClock.DelayAsync(_dataSource, TimeSpan.FromSeconds(1.5));
         await _db.TouchLastSeenAsync(
         [
             new TelemetryReading("dev-new", "temperature", 20, T0),
@@ -173,7 +173,7 @@ public sealed class PulseDbTests : IAsyncLifetime
     {
         var reading = new TelemetryReading("dev-1", "temperature", 20, T0);
         await _db.TouchLastSeenAsync([reading], default);
-        await Task.Delay(1500);
+        await DbClock.DelayAsync(_dataSource, TimeSpan.FromSeconds(1.5));
         Assert.Single(await _db.GetSilentSeriesAsync(TimeSpan.FromSeconds(1), default));
 
         await _db.TouchLastSeenAsync([reading], default);
@@ -219,13 +219,13 @@ public sealed class PulseDbTests : IAsyncLifetime
         var reading = new TelemetryReading("dev-1", "temperature", 20, DateTimeOffset.UtcNow);
         await _db.InsertReadingsAsync([reading], default);
         await _db.TouchLastSeenAsync([reading], default);
-        await Task.Delay(1500);
+        await DbClock.DelayAsync(_dataSource, TimeSpan.FromSeconds(1.5));
 
         var device = Assert.Single(await _db.GetDevicesAsync(TimeSpan.FromSeconds(1), null, default));
 
         Assert.True(device.Silent);
         Assert.Equal(20, device.Value); // its last known value is still shown
-        Assert.True(DateTimeOffset.UtcNow - device.LastSeenAt > TimeSpan.FromSeconds(1));
+        Assert.True(await DbClock.NowAsync(_dataSource) - device.LastSeenAt > TimeSpan.FromSeconds(1));
     }
 
     [Fact]
