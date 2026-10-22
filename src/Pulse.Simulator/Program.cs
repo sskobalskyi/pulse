@@ -9,6 +9,8 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.Configure<SimulatorOptions>(builder.Configuration.GetSection("Simulator"));
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<TokenProvider>();
 builder.Services.AddHostedService<Worker>();
 
 builder.Logging.AddOpenTelemetry(o =>

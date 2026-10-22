@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using Pulse.Api.Auth;
 using Pulse.Api.Hubs;
 using Pulse.Api.Processing;
+using Pulse.Api.Registry;
 using Pulse.Api.Storage;
 using Pulse.Core;
 using Testcontainers.PostgreSql;
@@ -40,8 +42,12 @@ public sealed class SilenceMonitorTests : IAsyncLifetime
         await _container.DisposeAsync();
     }
 
-    private SilenceMonitor NewInstance() =>
-        new(Options.Create(new SilenceOptions { Timeout = Timeout }), _db, new RecordingHub(), NullLogger<SilenceMonitor>.Instance);
+    private SilenceMonitor NewInstance()
+    {
+        var options = Options.Create(new SilenceOptions { Timeout = Timeout });
+        var fanout = new LiveFanout(new RecordingHub(), new DeviceRegistry(_dataSource, TimeProvider.System, options), Options.Create(new AuthOptions()));
+        return new SilenceMonitor(options, _db, fanout, NullLogger<SilenceMonitor>.Instance);
+    }
 
     /// <summary>Makes dev-1 report once and then stay quiet for longer than the timeout.</summary>
     private async Task MakeDeviceSilent()
@@ -51,7 +57,7 @@ public sealed class SilenceMonitorTests : IAsyncLifetime
     }
 
     private async Task<Alert[]> NoDataAlerts() =>
-        (await _db.GetAlertsAsync(100, default)).Where(a => a.Kind == AlertKind.NoData).ToArray();
+        (await _db.GetAlertsAsync(100, null, default)).Where(a => a.Kind == AlertKind.NoData).ToArray();
 
     [Fact]
     public async Task Instances_checking_at_the_same_time_raise_the_alert_once()

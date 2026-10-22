@@ -1,0 +1,603 @@
+openapi: 3.1.0
+info:
+  title: Pulse Device API (additions)
+  version: 0.1.0
+  summary: The device-platform surface that Greenhaus needs from Pulse.
+  description: |
+    Pulse stays a generic device platform. This contract describes only what is new: a device registry
+    with a lifecycle, channels and capabilities, per-device alert rules, a command API and a claim API.
+    It says nothing about pots or plants. The existing Pulse endpoints (telemetry ingestion, device
+    list, series, alerts) keep working; the one change to them is the optional `channel` of a reading,
+    described below.
+
+    A series is keyed by device, metric and channel. A device can expose several channels of one metric,
+    for example one soil-moisture channel per zone.
+
+    Service-to-service calls use a client-credentials token. Users call only the read endpoints for
+    devices they own. A device that is not the caller's answers `404`, not `403`, so its existence is
+    not revealed.
+
+    **Errors** are `application/problem+json` with a stable `code` to switch on. The title and detail
+    are for people and may change.
+
+    **Readings and channels.** A reading sent to the telemetry ingestion endpoint may name its `channel`.
+    A reading that does not is on the channel named after its metric, so senders that know nothing about
+    channels keep working. For a *registered* device the reading has to fit the channels it declared:
+    without a channel it goes to the only channel of its metric, and `400` with code `ambiguous_channel`
+    (several channels of that metric), `unknown_channel` (no such channel) or `metric_mismatch` (the channel
+    measures something else) otherwise. A device nobody registered is accepted as it is. A value outside
+    the plausible range of a platform metric is `400 value_out_of_range`, and data from a retired device
+    is `409 device_retired`. The whole batch is refused when one reading is, and nothing of it is stored.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8090/api/pulse/v2
+    description: Local gateway
+security:
+  - bearerAuth: []
+tags:
+  - name: Registry
+  - name: Rules
+  - name: Commands
+  - name: Series
+paths:
+  /devices:
+    get:
+      tags: [Registry]
+      operationId: listDevices
+      summary: Devices visible to the caller
+      parameters:
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/Lifecycle' }
+        - name: ownerId
+          in: query
+          description: Service callers only
+          schema: { type: string }
+      responses:
+        '200':
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Device' }
+        '400':
+          description: The state filter is not one of the lifecycle states (code `invalid_state_filter`)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    post:
+      tags: [Registry]
+      operationId: registerDevice
+      summary: Register an allocated device
+      description: |
+        Service callers only. Idempotent on `deviceId`: registering again changes nothing and returns `200`
+        with the device as it was first registered. Registers the device in state `allocated` with its
+        capability manifest and the hash of its credential, which the broker uses for authentication.
+
+        The request is validated as a whole and every problem is reported in `detail`, not just the first
+        (`400`, code `validation_failed`): ids may only contain letters, digits, `.`, `_` and `-` (they end up in
+        topics and URLs), channel ids are unique, every channel metric and actuator kind is a known one, the hard
+        limits of an actuator make sense (`maxRunSeconds` at most `dailyCapSeconds`), and the claim token has
+        not already expired.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceRegistration' }
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '200':
+          description: Already registered, returned unchanged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [Registry]
+      operationId: getDevice
+      summary: One device with its channels and capabilities
+      responses:
+        '200':
+          description: The device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/{deviceId}/ship:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Registry]
+      operationId: markShipped
+      summary: Mark a device shipped, which makes it claimable
+      description: |
+        Service callers only. `allocated` to `shipped`. Shipping a device that is already `shipped` returns it
+        unchanged with `200`, so a repeated call (an at-least-once event handler retrying) is harmless.
+        Any other state is `409` with code `invalid_state`.
+      responses:
+        '200':
+          description: The device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /devices/{deviceId}/claim:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Registry]
+      operationId: claimDevice
+      summary: Claim a shipped device for an owner
+      description: |
+        Service callers only. Verifies the one-time token against the stored hash, requires state `shipped`
+        and an unexpired token, and binds the device to the owner. The token works once: its hash is erased on
+        a successful claim, and when the device is retired.
+
+        Everything that is not allowed is `409` with a code to tell the cases apart: `invalid_state` (the
+        device is not `shipped`, for example already claimed), `token_invalid` (the token does not match) and
+        `token_expired`. A wrong token is reported before an expired one, so `token_expired` is only ever
+        said to the holder of the real token.
+
+        Attempts are rate limited, counted whether they succeed or not, per device and per caller: by default
+        5 a minute per device and 30 a minute per caller. Beyond that the answer is `429` with `Retry-After`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaimRequest' }
+      responses:
+        '200':
+          description: The claimed device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /devices/{deviceId}/retire:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Registry]
+      operationId: retireDevice
+      summary: Retire a device
+      description: |
+        Service callers only. Allowed from any state. A retired device no longer raises no-data alerts (an open
+        one is resolved), an unused claim token stops working, its telemetry is refused (`409`, code
+        `device_retired`) and its credential stops working. Retiring a device that is already retired returns it
+        unchanged with `200`.
+      responses:
+        '200':
+          description: The retired device
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/{deviceId}/channels/{channelId}/calibration:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - $ref: '#/components/parameters/ChannelId'
+    put:
+      tags: [Registry]
+      operationId: calibrateChannel
+      summary: Store the dry and wet raw values of a sensor channel
+      description: |
+        The values are stored with the channel and shown in the device. Pulse does not apply them to readings
+        yet, so a sensor must send values in the unit of its metric. `dryRaw` and `wetRaw` must be finite
+        numbers and must differ, otherwise readings could not be scaled: `400`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dryRaw, wetRaw]
+              properties:
+                dryRaw: { type: number }
+                wetRaw: { type: number }
+      responses:
+        '200':
+          description: The channel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/rules:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [Rules]
+      operationId: getRules
+      summary: Alert rules of a device
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Rule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Rules]
+      operationId: setRules
+      summary: Replace the alert rules of a device
+      description: Threshold rules with a hysteresis margin, per channel. A no-data timeout can be set per channel.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Rule' }
+      responses:
+        '200':
+          description: The stored rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Rule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/commands:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    post:
+      tags: [Commands]
+      operationId: sendCommand
+      summary: Queue a command for a device
+      description: |
+        Idempotent on `commandId`. The command is persisted, handed to the MQTT bridge and published with
+        at-least-once delivery. A command that has expired is never executed by the device.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandRequest' }
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Command' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Commands]
+      operationId: listCommands
+      summary: Recent commands
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Commands, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Command' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/{deviceId}/commands/{commandId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - name: commandId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Commands]
+      operationId: getCommand
+      summary: One command with its result
+      responses:
+        '200':
+          description: The command
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Command' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/channels/{channelId}/series:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      tags: [Series]
+      operationId: getSeries
+      summary: Readings of one channel
+      description: |
+        `raw` returns the readings themselves, `1m` and `1h` return averages with the minimum and maximum of
+        each bucket (the hourly average is weighted by the readings in each minute). A user sees the series of
+        their own devices only, and a series of a registered device must name one of its declared channels.
+
+        Each resolution has a longest window, so one request cannot ask for millions of points: 6 hours for
+        `raw`, 7 days for `1m`, 365 days for `1h`. A longer window is `400` with code `window_too_large`.
+        `raw` returns at most 10 000 points, the latest ones, and says so with the header `X-Pulse-Truncated: true`.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: resolution
+          in: query
+          schema: { type: string, enum: [raw, 1m, 1h], default: raw }
+      responses:
+        '200':
+          description: Points in ascending time
+          headers:
+            X-Pulse-Truncated:
+              description: '`true` when a `raw` series hit the point limit and only the latest points are returned'
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Point' }
+        '400':
+          description: |
+            The request makes no sense. Codes: `invalid_range` (`from` missing or not a date and time,
+            or not before `to`), `invalid_resolution`, `window_too_large`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Keycloak access token. Authentication failures are described here once, not on every operation:
+        `401` without a valid token (missing, expired, wrong issuer or signature), `403` when a user token
+        calls an operation that is for service callers only.
+
+        A service caller is a client-credentials token that carries the role `pulse-service` (a realm role or a
+        client role). It manages the registry and sees every device. Any other valid token is a user and sees
+        only the devices whose `ownerId` is the token's subject.
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string }
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: The request is invalid
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Not found, or not visible to the caller
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: The request conflicts with the device state
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds to wait before trying again
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    Problem:
+      type: object
+      required: [title, status, code]
+      properties:
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:
+          type: string
+          description: A stable code to switch on. Not an exhaustive list, new codes may be added.
+          examples:
+            - invalid_state
+            - token_invalid
+            - token_expired
+            - rate_limited
+            - validation_failed
+            - invalid_state_filter
+            - invalid_range
+            - invalid_resolution
+            - window_too_large
+            - device_retired
+            - ambiguous_channel
+            - unknown_channel
+            - metric_mismatch
+            - value_out_of_range
+            - bad_request
+            - not_found
+            - command_expired
+            - device_offline
+    Metric:
+      type: string
+      enum: [temperature, air_humidity, soil_moisture, ph, light, airflow, tank_level, overflow, flow]
+      description: The platform metrics, including the safety sensors
+    Lifecycle:
+      type: string
+      enum: [allocated, shipped, claimed, active, retired]
+    ActuatorKind:
+      type: string
+      enum: [pump, heater, lamp, fan, humidifier]
+    Channel:
+      type: object
+      required: [id, metric]
+      properties:
+        id:
+          type: string
+          description: Unique within the device. Letters, digits, `.`, `_` and `-` only, because it ends up in topics and URLs.
+          pattern: '^[A-Za-z0-9._-]+$'
+        metric: { $ref: '#/components/schemas/Metric' }
+        label: { type: string, description: 'Free label, for example the zone the sensor sits in' }
+        unit: { type: string }
+        calibration:
+          type: object
+          properties:
+            dryRaw: { type: number }
+            wetRaw: { type: number }
+            calibratedAt: { type: string, format: date-time }
+    HardLimits:
+      type: object
+      required: [maxRunSeconds, minIntervalSeconds, dailyCapSeconds]
+      properties:
+        maxRunSeconds: { type: integer, minimum: 1 }
+        minIntervalSeconds: { type: integer, minimum: 0 }
+        dailyCapSeconds: { type: integer, minimum: 1 }
+    ActuatorCapability:
+      type: object
+      required: [id, kind, hardLimits]
+      properties:
+        id: { type: string }
+        kind: { $ref: '#/components/schemas/ActuatorKind' }
+        hardLimits: { $ref: '#/components/schemas/HardLimits' }
+        thermalCutoff:
+          type: boolean
+          description: A heater declares whether it has a hardware thermal cutoff
+    Capabilities:
+      type: object
+      required: [channels, actuators]
+      properties:
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+        actuators:
+          type: array
+          items: { $ref: '#/components/schemas/ActuatorCapability' }
+    Device:
+      type: object
+      required: [id, model, state, capabilities]
+      properties:
+        id: { type: string }
+        model: { type: string }
+        state: { $ref: '#/components/schemas/Lifecycle' }
+        ownerId: { type: [string, 'null'] }
+        connection:
+          type: string
+          enum: [online, offline, unknown]
+          description: |
+            `unknown` until the device has reported anything. Then `online` while it reports within the no-data
+            timeout and `offline` after. It is derived from how recently the device reported, not from the
+            broker's last will, until the MQTT bridge exists.
+        lastSeenAt:
+          type: [string, 'null']
+          format: date-time
+          description: When Pulse last received anything from any channel of the device, by Pulse's clock
+        firmware: { type: string }
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+    DeviceRegistration:
+      type: object
+      required: [id, model, capabilities, credentialHash, claimTokenHash, claimTokenExpiresAt]
+      properties:
+        id:
+          type: string
+          description: Letters, digits, `.`, `_` and `-` only, at most 64 characters, because it ends up in topics and URLs.
+          pattern: '^[A-Za-z0-9._-]+$'
+          maxLength: 64
+        model: { type: string }
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+        credentialHash:
+          type: string
+          description: |
+            Salted hash of the device's broker password. The plaintext never travels. Opaque to the registry, which
+            stores it and never interprets it. Its format is whatever the MQTT broker is configured to verify.
+        claimTokenHash:
+          type: string
+          description: |
+            SHA-256 of the claim token (its UTF-8 bytes), as 64 hexadecimal characters, optionally written
+            `sha256:<hex>`. Case does not matter. A plain fast hash is enough because the token is long and random;
+            a password hash would only protect guessable secrets. Whoever generates the token and prints it on the
+            device computes this the same way.
+          pattern: '^(sha256:)?[0-9A-Fa-f]{64}$'
+        claimTokenExpiresAt:
+          type: string
+          format: date-time
+          description: Must be in the future when the device is registered
+    ClaimRequest:
+      type: object
+      required: [token, ownerId]
+      properties:
+        token: { type: string }
+        ownerId: { type: string, description: Keycloak subject of the new owner }
+    Rule:
+      type: object
+      required: [channelId, kind]
+      properties:
+        channelId: { type: string }
+        kind: { type: string, enum: [threshold, no_data] }
+        min: { type: number }
+        max: { type: number }
+        margin: { type: number, minimum: 0 }
+        timeoutSeconds: { type: integer, minimum: 10 }
+    CommandRequest:
+      type: object
+      required: [commandId, type, actuatorId, expiresAt]
+      properties:
+        commandId: { type: string, format: uuid }
+        type: { type: string, enum: [run_actuator, stop_actuator, set_kill_switch] }
+        actuatorId: { type: string }
+        durationSeconds: { type: integer, minimum: 1 }
+        enabled: { type: boolean }
+        expiresAt:
+          type: string
+          format: date-time
+          description: After this moment the device must not execute the command
+    Command:
+      type: object
+      required: [commandId, deviceId, type, status, createdAt]
+      properties:
+        commandId: { type: string, format: uuid }
+        deviceId: { type: string }
+        type: { type: string }
+        actuatorId: { type: string }
+        status: { type: string, enum: [queued, sent, accepted, completed, rejected, failed, expired] }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+    Point:
+      type: object
+      required: [ts, value]
+      properties:
+        ts: { type: string, format: date-time }
+        value:
+          type: number
+          description: The reading for `raw`, the average of the bucket for `1m` and `1h`
+        min:
+          type: number
+          description: Smallest reading of the bucket. Present for `1m` and `1h` only, a `raw` point is one reading.
+        max:
+          type: number
+          description: Largest reading of the bucket. Present for `1m` and `1h` only.
