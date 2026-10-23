@@ -1,0 +1,37 @@
+# Turns authentication on against the Keycloak of the Greenhaus stack instead of a Keycloak of its own, so a person has
+# one identity across Orderflow, Greenhaus and Pulse:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.shared-realm.yml up --build
+#
+# It expects the Greenhaus Keycloak to be running on http://localhost:8181 with the `greenhaus` realm (see the greenhaus
+# repository, auth/greenhaus-realm.json), which carries the same `pulse-web` and `pulse-service` clients and the
+# `pulse-service` role as auth/pulse-realm.json. Pulse starts none of that itself and does not depend on it being there
+# at build time: the API reads the realm's keys when the first token arrives.
+#
+# The API reaches Keycloak through the host (host.docker.internal), while tokens name it by the address the browser
+# uses, so the issuer is set separately. Local use only, none of this is a secret.
+
+services:
+  api:
+    environment:
+      Auth__Enabled: "true"
+      Auth__Authority: http://host.docker.internal:8181/realms/greenhaus
+      Auth__Issuer: http://localhost:8181/realms/greenhaus
+      Auth__RequireHttpsMetadata: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # The address of the identity provider is baked into the dashboard at build time, as seen from the browser.
+  web:
+    build:
+      args:
+        VITE_AUTH_AUTHORITY: http://localhost:8181/realms/greenhaus
+        VITE_AUTH_CLIENT_ID: pulse-web
+
+  simulator:
+    environment:
+      Simulator__Auth__TokenUrl: http://host.docker.internal:8181/realms/greenhaus/protocol/openid-connect/token
+      Simulator__Auth__ClientId: pulse-service
+      Simulator__Auth__ClientSecret: pulse-dev-secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
