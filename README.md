@@ -241,6 +241,8 @@ curl -s localhost:5080/api/pulse/v2/devices -H "Authorization: Bearer $ALICE"   
 
 The simulator gets its own service token.
 
+To use the one Keycloak of the whole ecosystem instead (the `greenhaus` realm of the Greenhaus stack on port 8181, which carries the same clients, users and role), start Pulse with `docker-compose.shared-realm.yml` rather than the auth override. A person then has one subject across Orderflow, Greenhaus and Pulse, and the services of Greenhaus call Pulse with a token of that realm. Nothing in the code names a realm: the API's `Auth__Authority`/`Auth__Issuer` and the dashboard's build argument are the only places. Checked with the same sign-in test against it (`PULSE_KEYCLOAK_URL=http://localhost:8181 PULSE_REALM=greenhaus`).
+
 The dashboard signs in through Keycloak (authorization code flow with PKCE, client `pulse-web`) when the web image is built with `VITE_AUTH_AUTHORITY`, which the auth override does. Sign in as `alice` or `bob` (password = name) and it shows only the devices that person owns, live and in the alert feed. A device nobody claimed, such as the simulator's, is visible to service callers only, so it does not appear. The session lives in the tab (session storage) and signing out also ends the Keycloak session. Without the build argument there is no login, which is how the plain stack runs. `web/e2e/auth.spec.ts` covers it and runs with `PULSE_AUTH_E2E=1` against the auth stack.
 
 ## Observability

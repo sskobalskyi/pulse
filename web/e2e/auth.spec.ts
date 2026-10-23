@@ -3,7 +3,9 @@ import { expect, test, type Page } from '@playwright/test'
 // Needs the stack with authentication on, so it only runs when asked to:
 //   docker compose -f docker-compose.yml -f docker-compose.auth.yml up --build -d --wait
 //   PULSE_AUTH_E2E=1 PULSE_WEB_URL=http://localhost:8080 npx playwright test auth
+// For the shared realm (docker-compose.shared-realm.yml): add PULSE_KEYCLOAK_URL=http://localhost:8181 PULSE_REALM=greenhaus
 const KEYCLOAK = process.env.PULSE_KEYCLOAK_URL ?? 'http://localhost:8180'
+const REALM = process.env.PULSE_REALM ?? 'pulse'
 const API = process.env.PULSE_API_URL ?? 'http://localhost:5080'
 const V2 = `${API}/api/pulse/v2`
 
@@ -21,7 +23,7 @@ async function token(realm: string, params: Record<string, string>, client = 'ad
 
 async function subjectOf(username: string): Promise<string> {
   const admin = await token('master', { grant_type: 'password', username: 'admin', password: 'admin' })
-  const response = await fetch(`${KEYCLOAK}/admin/realms/pulse/users?username=${username}&exact=true`, { headers: { Authorization: `Bearer ${admin}` } })
+  const response = await fetch(`${KEYCLOAK}/admin/realms/${REALM}/users?username=${username}&exact=true`, { headers: { Authorization: `Bearer ${admin}` } })
   return ((await response.json()) as { id: string }[])[0].id
 }
 
@@ -34,7 +36,7 @@ async function signIn(page: Page, username: string) {
 }
 
 test('a user signs in and sees only their own device, one button per channel', async ({ page }) => {
-  const service = await token('pulse', { grant_type: 'client_credentials', client_secret: 'pulse-dev-secret' }, 'pulse-service')
+  const service = await token(REALM, { grant_type: 'client_credentials', client_secret: 'pulse-dev-secret' }, 'pulse-service')
   const headers = { Authorization: `Bearer ${service}`, 'Content-Type': 'application/json' }
   const id = `e2e-${Date.now().toString(36)}`
 
