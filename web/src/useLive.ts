@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr'
 import { API_URL, fetchAlerts } from './api'
+import { accessToken } from './auth'
 import { appendPoint, isNewer, mergeAlerts, type LivePoint } from './liveState'
-import { seriesKey, type Alert, type ConnectionStatus, type Reading } from './types'
+import { channelOf, seriesKey, type Alert, type ConnectionStatus, type Reading } from './types'
 
 const BUFFER_SIZE = 300
 const MAX_ALERTS = 50
@@ -38,7 +39,7 @@ export function useLive(): LiveSnapshot {
     let disposed = false
 
     const connection = new HubConnectionBuilder()
-      .withUrl(`${API_URL}/hubs/live`)
+      .withUrl(`${API_URL}/hubs/live`, { accessTokenFactory: async () => (await accessToken()) ?? '' })
       .withAutomaticReconnect([0, 1000, 3000, 5000, 10000])
       .configureLogging(LogLevel.Warning)
       .build()
@@ -50,7 +51,7 @@ export function useLive(): LiveSnapshot {
 
     connection.on('readings', (batch: Reading[]) => {
       for (const reading of batch) {
-        const key = seriesKey(reading.deviceId, reading.metric)
+        const key = seriesKey(reading.deviceId, channelOf(reading))
         if (isNewer(reading, latest.current.get(key))) latest.current.set(key, reading)
 
         const buffer = buffers.current.get(key) ?? []

@@ -37,7 +37,24 @@
   "metrics": {
     "temperature": "Temperature",
     "humidity": "Humidity",
-    "battery": "Battery"
+    "battery": "Battery",
+    "air_humidity": "Air humidity",
+    "soil_moisture": "Soil moisture",
+    "ph": "pH",
+    "light": "Light",
+    "airflow": "Airflow",
+    "tank_level": "Tank level",
+    "overflow": "Overflow",
+    "flow": "Flow"
   },
-  "language": "Language"
+  "language": "Language",
+  "auth": {
+    "title": "Sign in to Pulse",
+    "description": "The dashboard shows the devices you own.",
+    "signIn": "Sign in",
+    "signOut": "Sign out",
+    "checking": "Checking your session…",
+    "failed": "Signing in failed. Try again.",
+    "signedInAs": "Signed in as {{name}}"
+  }
 }
