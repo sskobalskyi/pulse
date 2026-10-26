@@ -1,0 +1,31 @@
+# Turns the MQTT bridge on and adds the EMQX broker devices connect to:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up --build
+#
+# Devices publish readings, status and answers to commands under greenhaus/v1/devices/{deviceId}/ and receive commands on
+# .../commands, as contracts/device-mqtt.yaml defines. Pulse delivers commands through the same broker. Without this file
+# none of that runs: commands are accepted and queued, and Pulse needs no broker.
+#
+# EMQX dashboard: http://localhost:18084 (admin / public, EMQX asks for a new password on first login). The ports are shifted by
+# one so this does not clash with the broker of another project on the same machine. Local use only. The broker accepts any
+# client here: per-device credentials and topic permissions are not set up by this file.
+
+services:
+  emqx:
+    image: emqx/emqx:5.8.6
+    ports:
+      - "1884:1883"
+      - "18084:18083"
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    environment:
+      Mqtt__Enabled: "true"
+      Mqtt__Host: emqx
+    depends_on:
+      emqx:
+        condition: service_healthy

@@ -1,5 +1,6 @@
 using Confluent.Kafka;
 using Pulse.Api.Commands;
+using Pulse.Api.Mqtt;
 using Npgsql;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
@@ -27,10 +28,22 @@ builder.Services.AddSingleton<PulseDb>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DeviceRegistry>();
 builder.Services.AddSingleton<DeviceRuleStore>();
+builder.Services.AddSingleton<IngestService>();
 builder.Services.Configure<CommandsOptions>(builder.Configuration.GetSection(CommandsOptions.Section));
 builder.Services.AddSingleton<CommandStore>();
 // Until the MQTT bridge exists nothing delivers commands: they are queued, and expire if nobody picks them up.
-builder.Services.AddSingleton<ICommandSender, NoDeviceLink>();
+builder.Services.Configure<MqttOptions>(builder.Configuration.GetSection(MqttOptions.Section));
+builder.Services.AddSingleton<DeviceMessageHandler>();
+if (builder.Configuration.GetValue<bool>($"{MqttOptions.Section}:Enabled"))
+{
+    // The bridge is both what listens to the devices and what delivers commands to them.
+    builder.Services.AddSingleton<MqttBridge>();
+    builder.Services.AddSingleton<ICommandSender>(sp => sp.GetRequiredService<MqttBridge>());
+}
+else
+{
+    builder.Services.AddSingleton<ICommandSender, NoDeviceLink>();
+}
 
 // Integration events. Everything here stays idle unless Events:Enabled is true, so Pulse runs on its own without a broker.
 builder.Services.AddOptions<EventsOptions>().BindConfiguration("Events");
@@ -66,6 +79,7 @@ builder.Services.AddHostedService<SilenceMonitor>();
 builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHostedService<DeviceAllocatedConsumer>();
 builder.Services.AddHostedService<CommandWorker>();
+if (builder.Configuration.GetValue<bool>($"{MqttOptions.Section}:Enabled")) builder.Services.AddHostedService(sp => sp.GetRequiredService<MqttBridge>());
 
 builder.Services.AddSignalR();
 // Every problem response carries a stable `code`, as the v2 contract requires, including framework-generated ones.

@@ -1,0 +1,209 @@
+asyncapi: 3.0.0
+info:
+  title: Greenhaus device topics (MQTT)
+  version: 0.1.0
+  description: |
+    What a pot controller says to the platform and how the platform talks back.
+
+    Each controller authenticates to the broker (EMQX) with its own credential and may only publish and
+    subscribe under `greenhaus/v1/devices/{deviceId}/`. The broker publishes the Last Will on `status`
+    when a device disappears without saying goodbye.
+
+    **Safety is enforced on the controller.** The manifest declares hard limits for every actuator. The
+    controller refuses commands that exceed them and keeps enforcing them while offline. The cloud can
+    only tighten limits.
+
+    Commands carry an id and an expiry. QoS 1 may deliver a command twice, so executing the same id
+    again must be a no-op, and a command past its expiry must never run.
+  license:
+    name: MIT
+    url: https://opensource.org/license/mit
+defaultContentType: application/json
+servers:
+  emqx:
+    host: localhost:1883
+    protocol: mqtt
+    protocolVersion: '5.0'
+    description: Local EMQX. TLS and per-device ACLs are enabled in the full stack.
+channels:
+  manifest:
+    address: greenhaus/v1/devices/{deviceId}/manifest
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      manifest: { $ref: '#/components/messages/Manifest' }
+  telemetry:
+    address: greenhaus/v1/devices/{deviceId}/telemetry/{channelId}
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+      channelId: { $ref: '#/components/parameters/channelId' }
+    messages:
+      reading: { $ref: '#/components/messages/Reading' }
+  state:
+    address: greenhaus/v1/devices/{deviceId}/state
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      state: { $ref: '#/components/messages/State' }
+  status:
+    address: greenhaus/v1/devices/{deviceId}/status
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      status: { $ref: '#/components/messages/Status' }
+  commands:
+    address: greenhaus/v1/devices/{deviceId}/commands
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      command: { $ref: '#/components/messages/Command' }
+  commandAck:
+    address: greenhaus/v1/devices/{deviceId}/commands/ack
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      ack: { $ref: '#/components/messages/Ack' }
+operations:
+  publishManifest:
+    action: send
+    channel: { $ref: '#/channels/manifest' }
+    summary: The device publishes its capabilities on connect (retained, QoS 1).
+  publishReading:
+    action: send
+    channel: { $ref: '#/channels/telemetry' }
+    summary: The device publishes a reading per channel (QoS 0 or 1).
+  publishState:
+    action: send
+    channel: { $ref: '#/channels/state' }
+    summary: The device publishes actuator and kill-switch state on change (retained, QoS 1).
+  publishStatus:
+    action: send
+    channel: { $ref: '#/channels/status' }
+    summary: 'The device publishes "online" on connect (retained). The broker publishes "offline" as the Last Will.'
+  receiveCommand:
+    action: receive
+    channel: { $ref: '#/channels/commands' }
+    summary: The device receives commands from the bridge (QoS 1).
+  publishAck:
+    action: send
+    channel: { $ref: '#/channels/commandAck' }
+    summary: The device acknowledges every command, including refused and expired ones (QoS 1).
+components:
+  parameters:
+    deviceId:
+      description: Controller id, matches the credential's user name
+    channelId:
+      description: Sensor channel id from the manifest, for example soil_moisture_z1
+  messages:
+    Manifest:
+      name: manifest
+      title: Capability manifest
+      payload:
+        type: object
+        required: [model, firmware, channels, actuators]
+        properties:
+          model: { type: string }
+          firmware: { type: string }
+          channels:
+            type: array
+            items:
+              type: object
+              required: [id, metric]
+              properties:
+                id: { type: string }
+                metric: { type: string, enum: [temperature, air_humidity, soil_moisture, ph, light, airflow, tank_level, overflow, flow] }
+                label: { type: string }
+                unit: { type: string }
+          actuators:
+            type: array
+            items:
+              type: object
+              required: [id, kind, hardLimits]
+              properties:
+                id: { type: string }
+                kind: { type: string, enum: [pump, heater, lamp, fan, humidifier] }
+                thermalCutoff: { type: boolean }
+                hardLimits:
+                  type: object
+                  required: [maxRunSeconds, minIntervalSeconds, dailyCapSeconds]
+                  properties:
+                    maxRunSeconds: { type: integer, minimum: 1 }
+                    minIntervalSeconds: { type: integer, minimum: 0 }
+                    dailyCapSeconds: { type: integer, minimum: 1 }
+    Reading:
+      name: reading
+      title: Sensor reading
+      traits:
+        - headers:
+            type: object
+            properties:
+              traceparent:
+                type: string
+                description: MQTT 5 user property carrying the W3C trace context
+      payload:
+        type: object
+        required: [ts, value]
+        properties:
+          ts: { type: string, format: date-time, description: 'Device time, UTC' }
+          value: { type: number }
+          raw: { type: number, description: Raw sensor value before calibration }
+          seq: { type: integer, description: 'Monotonic counter, lets the bridge spot gaps' }
+    State:
+      name: state
+      title: Controller state
+      payload:
+        type: object
+        required: [ts, killSwitch, actuators]
+        properties:
+          ts: { type: string, format: date-time }
+          killSwitch: { type: boolean }
+          actuators:
+            type: array
+            items:
+              type: object
+              required: [id, state]
+              properties:
+                id: { type: string }
+                state: { type: string, enum: [idle, running, blocked, fault] }
+                blockedReason: { type: string, enum: [min_interval, daily_cap, kill_switch, overflow, tank_empty, fruitless_runs] }
+                runSecondsToday: { type: integer, minimum: 0 }
+    Status:
+      name: status
+      title: Online or offline
+      payload:
+        type: object
+        required: [status, ts]
+        properties:
+          status: { type: string, enum: [online, offline] }
+          ts: { type: string, format: date-time }
+    Command:
+      name: command
+      title: Command to the controller
+      traits:
+        - headers:
+            type: object
+            properties:
+              traceparent: { type: string }
+      payload:
+        type: object
+        required: [commandId, type, expiresAt]
+        properties:
+          commandId: { type: string, format: uuid }
+          type: { type: string, enum: [run_actuator, stop_actuator, set_kill_switch] }
+          actuatorId: { type: string }
+          durationSeconds: { type: integer, minimum: 1 }
+          enabled: { type: boolean }
+          expiresAt: { type: string, format: date-time }
+    Ack:
+      name: ack
+      title: Command result
+      payload:
+        type: object
+        required: [commandId, status, ts]
+        properties:
+          commandId: { type: string, format: uuid }
+          status: { type: string, enum: [accepted, completed, rejected, failed, expired] }
+          reason:
+            type: string
+            enum: [exceeds_hard_limit, min_interval, daily_cap, kill_switch, overflow, tank_empty, fruitless_runs, expired, duplicate, unknown_actuator]
+          ts: { type: string, format: date-time }

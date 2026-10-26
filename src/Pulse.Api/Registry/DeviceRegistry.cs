@@ -301,6 +301,47 @@ public sealed class DeviceRegistry(
     }
 
     /// <summary>Which of these devices are retired. Used to refuse their data.</summary>
+    /// <summary>
+    /// A device said it is online, or the broker said it is offline for it. From now on this is how its connection is known.
+    /// Announces the change once, and only when it is one: a device that reconnects while already online is not news.
+    /// </summary>
+    public async Task<bool> ReportConnectionAsync(string deviceId, bool online, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        await using var update = new NpgsqlCommand("""
+            UPDATE devices d
+            SET connection_source = 'mqtt', reported_status = @new
+            FROM (SELECT id, reported_status FROM devices WHERE id = @id FOR UPDATE) before
+            WHERE d.id = before.id AND d.state <> 'retired'
+            RETURNING before.reported_status
+            """, conn, tx);
+        update.Parameters.AddWithValue("id", deviceId);
+        update.Parameters.AddWithValue("new", online ? "online" : "offline");
+        var old = (string?)await update.ExecuteScalarAsync(ct);
+
+        var changed = old is not null && old != (online ? "online" : "offline");
+        if (changed && outbox is { Enabled: true })
+        {
+            var now = time.GetUtcNow();
+            // The broker's last will is the one way to know a device went away without waiting for its silence.
+            await outbox.AddAsync(conn, tx, EventNames.DeviceStatus, IntegrationEvents.ForStatus(deviceId, online, now, online ? "reconnect" : "last_will"), now, ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return changed;
+    }
+
+    /// <summary>The firmware a device says it runs, from the manifest it publishes when it connects. True when that changed what was stored.</summary>
+    public async Task<bool> ReportFirmwareAsync(string deviceId, string firmware, CancellationToken ct)
+    {
+        await using var update = dataSource.CreateCommand("UPDATE devices SET firmware = @firmware WHERE id = @id AND state <> 'retired' AND firmware IS DISTINCT FROM @firmware");
+        update.Parameters.AddWithValue("id", deviceId);
+        update.Parameters.AddWithValue("firmware", firmware);
+        return await update.ExecuteNonQueryAsync(ct) == 1;
+    }
+
     public async Task<IReadOnlySet<string>> RetiredAmongAsync(IReadOnlyCollection<string> deviceIds, CancellationToken ct)
     {
         if (deviceIds.Count == 0) return new HashSet<string>();
@@ -322,7 +363,8 @@ public sealed class DeviceRegistry(
             SELECT d.id, d.model, d.state, d.owner_id, d.firmware, d.actuators,
                    seen.at AS last_seen_at,
                    -- Same clock as last_seen_at and the no-data check, so the three can never disagree.
-                   CASE WHEN seen.at IS NULL THEN 'unknown' WHEN seen.at > now() - @onlineWithin THEN 'online' ELSE 'offline' END AS connection
+                   CASE WHEN d.connection_source = 'mqtt' THEN d.reported_status
+                        WHEN seen.at IS NULL THEN 'unknown' WHEN seen.at > now() - @onlineWithin THEN 'online' ELSE 'offline' END AS connection
             FROM devices d
             LEFT JOIN LATERAL (SELECT max(s.last_seen_at) AS at FROM device_last_seen s WHERE s.device_id = d.id) seen ON true
             WHERE (@id::text IS NULL OR d.id = @id)
