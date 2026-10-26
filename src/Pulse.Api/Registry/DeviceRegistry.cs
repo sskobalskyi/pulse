@@ -342,6 +342,14 @@ public sealed class DeviceRegistry(
         return await update.ExecuteNonQueryAsync(ct) == 1;
     }
 
+    /// <summary>The stored hash of a device's broker password, or null when there is no such device or it is retired and may no longer connect.</summary>
+    public async Task<string?> GetCredentialHashAsync(string deviceId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand("SELECT credential_hash FROM devices WHERE id = @id AND state <> 'retired'");
+        cmd.Parameters.AddWithValue("id", deviceId);
+        return (string?)await cmd.ExecuteScalarAsync(ct);
+    }
+
     public async Task<IReadOnlySet<string>> RetiredAmongAsync(IReadOnlyCollection<string> deviceIds, CancellationToken ct)
     {
         if (deviceIds.Count == 0) return new HashSet<string>();

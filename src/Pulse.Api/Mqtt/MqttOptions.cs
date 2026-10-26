@@ -17,6 +17,12 @@ public sealed class MqttOptions
     public string? Password { get; set; }
 
     /// <summary>
+    /// What the broker sends with its authentication and authorization requests to /mqtt/auth and /mqtt/acl, as `Authorization: Bearer ...`.
+    /// Empty leaves those endpoints off, which is how Pulse runs against a broker that lets everyone in.
+    /// </summary>
+    public string? HttpAuthSecret { get; set; }
+
+    /// <summary>
     /// Set it to give the bridge a session the broker keeps while it is away, so what devices said meanwhile (an answer to a
     /// command above all) is waiting when it is back. Needs a name no other instance uses. Without it the bridge starts clean.
     /// </summary>

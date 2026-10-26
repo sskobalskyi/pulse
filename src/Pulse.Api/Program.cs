@@ -34,6 +34,7 @@ builder.Services.AddSingleton<CommandStore>();
 // Until the MQTT bridge exists nothing delivers commands: they are queued, and expire if nobody picks them up.
 builder.Services.Configure<MqttOptions>(builder.Configuration.GetSection(MqttOptions.Section));
 builder.Services.AddSingleton<DeviceMessageHandler>();
+builder.Services.AddSingleton<BrokerAccess>();
 if (builder.Configuration.GetValue<bool>($"{MqttOptions.Section}:Enabled"))
 {
     // The bridge is both what listens to the devices and what delivers commands to them.
@@ -124,6 +125,7 @@ app.MapHealthChecks("/health");
 app.MapTelemetryEndpoints();
 app.MapDeviceRegistry();
 app.MapCommands();
+if (!string.IsNullOrEmpty(app.Configuration[$"{MqttOptions.Section}:HttpAuthSecret"])) app.MapBrokerAuth();
 app.MapHub<LiveHub>("/hubs/live").RequireAuthorization(Policies.Caller);
 
 app.Run();
