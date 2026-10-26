@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NpgsqlTypes;
+using Pulse.Api.Commands;
 using Pulse.Api.Events;
 using Pulse.Api.Processing;
 using Pulse.Core;
@@ -197,6 +198,9 @@ public sealed class DeviceRegistry(
                 await using var forget = new NpgsqlCommand("DELETE FROM device_last_seen WHERE device_id = @id", conn, tx);
                 forget.Parameters.AddWithValue("id", id);
                 await forget.ExecuteNonQueryAsync(ct);
+
+                // Nobody keeps waiting for a result that can no longer come.
+                await CommandStore.CancelOpenAsync(conn, tx, outbox, id, time.GetUtcNow(), ct);
 
                 // Announced in the same transaction, and only when the device really was retired just now, not on a repeated call.
                 if (outbox is { Enabled: true })

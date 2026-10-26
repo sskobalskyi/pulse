@@ -13,6 +13,7 @@ public static class EventNames
     public const string DeviceStatus = "device.status.v1";
     public const string DeviceRetired = "device.retired.v1";
     public const string DeviceAllocated = "device.allocated.v1";
+    public const string CommandCompleted = "command.completed.v1";
 
     /// <summary>The <c>schemaVersion</c> header of every event this version of Pulse publishes.</summary>
     public const string SchemaVersion = "1";
@@ -29,6 +30,15 @@ public sealed record AlertEvent(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Direction,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Value,
     DateTimeOffset At);
+
+/// <summary>The end of a command: <paramref name="Status"/> is completed, rejected, failed or expired.</summary>
+public sealed record CommandCompletedEvent(
+    Guid CommandId,
+    string DeviceId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ActuatorId,
+    string Status,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Reason,
+    DateTimeOffset FinishedAt);
 
 public sealed record DeviceRetiredEvent(string DeviceId, DateTimeOffset RetiredAt);
 
@@ -78,6 +88,9 @@ public static class IntegrationEvents
                 isThreshold ? alert.Value : null,
                 alert.Timestamp));
     }
+
+    public static CommandCompletedEvent ForCommandCompleted(Command command) =>
+        new(command.CommandId, command.DeviceId, command.ActuatorId, command.Status, command.Reason, command.FinishedAt ?? throw new ArgumentException("The command is not over.", nameof(command)));
 
     public static DeviceRetiredEvent ForRetired(string deviceId, DateTimeOffset at) => new(deviceId, at);
 

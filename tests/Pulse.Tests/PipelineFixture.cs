@@ -54,6 +54,9 @@ public sealed class PipelineFixture : IAsyncLifetime
     private const string BrokerUser = "rabbitmq";
     private const string BrokerPassword = "rabbitmq";
 
+    /// <summary>The services of the running API, for tests that stand in for something outside it, such as a device answering a command.</summary>
+    public IServiceProvider Services => _factory!.Services;
+
     /// <summary>The hosted services of the running API, in the order they were started.</summary>
     public List<Type> HostedServices => [.. _factory!.Services.GetServices<IHostedService>().Select(s => s.GetType())];
 

@@ -45,6 +45,12 @@ public static class PulseTelemetry
     public static readonly Counter<long> EventsConsumed =
         Meter.CreateCounter<long>("pulse.events.consumed", "{event}", "Integration events received, by event name and outcome.");
 
+    public static readonly Counter<long> CommandsQueued =
+        Meter.CreateCounter<long>("pulse.commands.queued", "{command}", "Commands accepted into the queue, by type.");
+
+    public static readonly Counter<long> CommandsFinished =
+        Meter.CreateCounter<long>("pulse.commands.finished", "{command}", "Commands that ended, by how: completed, rejected, failed or expired.");
+
     /// <summary>Events waiting in the outbox, set by the relay after each round. The thing to watch to know the broker is keeping up.</summary>
     public static long OutboxPending;
 

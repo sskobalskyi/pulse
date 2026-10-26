@@ -1,4 +1,5 @@
 using Confluent.Kafka;
+using Pulse.Api.Commands;
 using Npgsql;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
@@ -26,6 +27,10 @@ builder.Services.AddSingleton<PulseDb>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DeviceRegistry>();
 builder.Services.AddSingleton<DeviceRuleStore>();
+builder.Services.Configure<CommandsOptions>(builder.Configuration.GetSection(CommandsOptions.Section));
+builder.Services.AddSingleton<CommandStore>();
+// Until the MQTT bridge exists nothing delivers commands: they are queued, and expire if nobody picks them up.
+builder.Services.AddSingleton<ICommandSender, NoDeviceLink>();
 
 // Integration events. Everything here stays idle unless Events:Enabled is true, so Pulse runs on its own without a broker.
 builder.Services.AddOptions<EventsOptions>().BindConfiguration("Events");
@@ -60,6 +65,7 @@ builder.Services.AddHostedService<SilenceMonitor>();
 // After the migration like everything that touches the database: the relay reads the outbox table, the consumer registers devices.
 builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHostedService<DeviceAllocatedConsumer>();
+builder.Services.AddHostedService<CommandWorker>();
 
 builder.Services.AddSignalR();
 // Every problem response carries a stable `code`, as the v2 contract requires, including framework-generated ones.
@@ -103,6 +109,7 @@ app.UseAuthorization();
 app.MapHealthChecks("/health");
 app.MapTelemetryEndpoints();
 app.MapDeviceRegistry();
+app.MapCommands();
 app.MapHub<LiveHub>("/hubs/live").RequireAuthorization(Policies.Caller);
 
 app.Run();
