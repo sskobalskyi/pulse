@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Pulse.Core;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -200,6 +201,50 @@ public sealed class EventsPipelineTests(PipelineFixture stack)
         Assert.Equal("reconnect", back.Payload.GetProperty("cause").GetString());
         Assert.False(noData.Payload.TryGetProperty("value", out _)); // seconds of silence are not a reading
         Assert.Equal(noData.Payload.GetProperty("alertId").GetString(), noDataResolved.Payload.GetProperty("alertId").GetString());
+    }
+
+    [Fact]
+    public async Task The_end_of_a_command_is_published_once_in_the_contracts_format()
+    {
+        await using var listener = await Listener.StartAsync(stack.BrokerFactory, "command.completed.v1");
+        var pot = NewId();
+        using var register = await stack.Client.PostAsJsonAsync($"{V2}/devices", new
+        {
+            id = pot,
+            model = "greenhaus-pot-v1",
+            capabilities = new
+            {
+                channels = new[] { new { id = "soil-1", metric = "soil_moisture" } },
+                actuators = new[] { new { id = "pump-1", kind = "pump", hardLimits = new { maxRunSeconds = 20, minIntervalSeconds = 600, dailyCapSeconds = 120 } } },
+            },
+            credentialHash = "h",
+            claimTokenHash = ClaimTokens.Hash("t"),
+            claimTokenExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+        });
+        var commandId = Guid.NewGuid();
+        using var queued = await stack.Client.PostAsJsonAsync($"{V2}/devices/{pot}/commands", new
+        {
+            commandId,
+            type = "run_actuator",
+            actuatorId = "pump-1",
+            durationSeconds = 10,
+            expiresAt = DateTimeOffset.UtcNow.AddMinutes(2),
+        });
+        Assert.Equal(HttpStatusCode.Accepted, queued.StatusCode);
+        var store = stack.Services.GetRequiredService<Pulse.Api.Commands.CommandStore>();
+
+        // What the device link does when the device answers: first it took the command, then it refused it.
+        await store.ApplyAckAsync(pot, commandId, CommandStatus.Accepted, null, default);
+        await store.ApplyAckAsync(pot, commandId, CommandStatus.Rejected, "min_interval", default);
+        await store.ApplyAckAsync(pot, commandId, CommandStatus.Rejected, "min_interval", default); // the broker delivered it twice
+        var message = await listener.Next(pot, "command.completed.v1");
+        await Task.Delay(1500);
+
+        AssertFitsContract(message);
+        Assert.Equal((commandId, "pump-1", "rejected", "min_interval"),
+            (message.Payload.GetProperty("commandId").GetGuid(), message.Payload.GetProperty("actuatorId").GetString(),
+             message.Payload.GetProperty("status").GetString(), message.Payload.GetProperty("reason").GetString()));
+        Assert.Single(listener.For(pot), m => m.RoutingKey == "command.completed.v1");
     }
 
     [Fact]

@@ -18,10 +18,10 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
 
     /// <summary>Operations that exist in the contract and are implemented. Keep in step with the endpoints.</summary>
     private static readonly string[] Implemented =
-        ["listDevices", "registerDevice", "getDevice", "markShipped", "claimDevice", "retireDevice", "calibrateChannel", "getSeries", "getRules", "setRules"];
+        ["listDevices", "registerDevice", "getDevice", "markShipped", "claimDevice", "retireDevice", "calibrateChannel", "getSeries", "getRules", "setRules", "sendCommand", "listCommands", "getCommand"];
 
     /// <summary>Operations of the contract that later changes will implement. Listing them keeps the gap visible.</summary>
-    private static readonly string[] NotYet = ["sendCommand", "listCommands", "getCommand"];
+    private static readonly string[] NotYet = [];
 
     private static string ContractPath()
     {
@@ -169,6 +169,35 @@ public sealed class DeviceRegistryApiTests(PipelineFixture stack)
         using var rulesReadMissing = await stack.Client.GetAsync(Url("/devices/nope/rules"));
         Assert.Equal(HttpStatusCode.NotFound, rulesReadMissing.StatusCode);
         await Contract.Verify(rulesReadMissing, "GET", "/devices/{deviceId}/rules");
+
+        // sendCommand: 202, 400, 404, 409 (a command id for something else, then a retired device). listCommands and getCommand: 200, 404
+        var commandId = Guid.NewGuid();
+        var command = new { commandId, type = "run_actuator", actuatorId = "pump-1", durationSeconds = 10, expiresAt = DateTimeOffset.UtcNow.AddMinutes(2) };
+        Assert.Empty(Contract.ValidateRequest("POST", "/devices/{deviceId}/commands", command));
+        using var commandQueued = await stack.Client.PostAsJsonAsync(Url($"/devices/{id}/commands"), command);
+        Assert.Equal(HttpStatusCode.Accepted, commandQueued.StatusCode);
+        await Contract.Verify(commandQueued, "POST", "/devices/{deviceId}/commands");
+        using var commandInvalid = await stack.Client.PostAsJsonAsync(Url($"/devices/{id}/commands"), new { commandId = Guid.NewGuid(), type = "run_actuator", actuatorId = "pump-1", durationSeconds = 21, expiresAt = DateTimeOffset.UtcNow.AddMinutes(2) });
+        Assert.Equal(HttpStatusCode.BadRequest, commandInvalid.StatusCode);
+        await Contract.Verify(commandInvalid, "POST", "/devices/{deviceId}/commands");
+        using var commandUnknown = await stack.Client.PostAsJsonAsync(Url("/devices/nope/commands"), command);
+        Assert.Equal(HttpStatusCode.NotFound, commandUnknown.StatusCode);
+        await Contract.Verify(commandUnknown, "POST", "/devices/{deviceId}/commands");
+        using var commandReused = await stack.Client.PostAsJsonAsync(Url($"/devices/{id}/commands"), new { commandId, type = "run_actuator", actuatorId = "pump-1", durationSeconds = 11, expiresAt = DateTimeOffset.UtcNow.AddMinutes(2) });
+        Assert.Equal(HttpStatusCode.Conflict, commandReused.StatusCode);
+        await Contract.Verify(commandReused, "POST", "/devices/{deviceId}/commands");
+        using var commandList = await stack.Client.GetAsync(Url($"/devices/{id}/commands?limit=10"));
+        Assert.Equal(HttpStatusCode.OK, commandList.StatusCode);
+        await Contract.Verify(commandList, "GET", "/devices/{deviceId}/commands");
+        using var commandListMissing = await stack.Client.GetAsync(Url("/devices/nope/commands"));
+        Assert.Equal(HttpStatusCode.NotFound, commandListMissing.StatusCode);
+        await Contract.Verify(commandListMissing, "GET", "/devices/{deviceId}/commands");
+        using var commandRead = await stack.Client.GetAsync(Url($"/devices/{id}/commands/{commandId}"));
+        Assert.Equal(HttpStatusCode.OK, commandRead.StatusCode);
+        await Contract.Verify(commandRead, "GET", "/devices/{deviceId}/commands/{commandId}");
+        using var commandReadMissing = await stack.Client.GetAsync(Url($"/devices/{id}/commands/{Guid.NewGuid()}"));
+        Assert.Equal(HttpStatusCode.NotFound, commandReadMissing.StatusCode);
+        await Contract.Verify(commandReadMissing, "GET", "/devices/{deviceId}/commands/{commandId}");
 
         // retireDevice: 200 and 404
         using var retired = await Post($"/devices/{id}/retire");

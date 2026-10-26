@@ -19,6 +19,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Device registry:** devices are registered before they send data and move through `allocated`, `shipped`, `claimed`, `active`, `retired`. Claiming uses a one-time, expiring token that is stored only as a hash and is rate limited. Retiring a device stops its no-data alerts. See [Device registry and authentication](#device-registry-and-authentication).
 - **Alert rules per device:** each channel of a device can have a threshold rule (range and hysteresis margin) and a no-data timeout of its own, set over the API. A channel without one uses the platform's rules for its metric. See [Alert rules](#alert-rules).
 - **Integration events:** alerts, device status and retirements are published to RabbitMQ through a transactional outbox, and devices are registered from `device.allocated.v1`. Off by default. See [Integration events](#integration-events).
+- **Commands:** the platform sends commands to a device (run a pump, flip the kill switch) through a queue that survives restarts, is idempotent on `commandId`, expires what nobody could deliver and reports how each one ended. See [Commands](#commands).
 - **Authentication:** Keycloak JWTs behind a switch. Service callers manage the registry, users see only the devices they own.
 - **Schema migrations:** plain SQL files applied by the API on startup, with an existing database adopted rather than rebuilt ([ADR 0002](docs/adr/0002-sql-migrations-on-startup.md)).
 - **Contract tests:** responses are validated against `contracts/pulse-device-api.yaml`, the OpenAPI document that the rest of the system is built against.
@@ -207,6 +208,7 @@ with its name as the routing key, a persistent message, and the headers the cont
 | `alert.raised.v1`, `alert.resolved.v1` | an alert changes state | One `alertId` for the raised and the resolved event of the same alert. `direction` (below or above) only on raised. A no-data alert has no `value`. |
 | `device.status.v1` | a device goes offline or comes back | Online while any channel reports within its no-data timeout, offline when all are quiet. Cause `no_data` or `reconnect`. `last_will` comes with the MQTT bridge. A device that never reports is not announced. |
 | `device.retired.v1` | a device is retired | Once, not again on a repeated retire. |
+| `command.completed.v1` | a command ends | Once per command, with its final `status` (completed, rejected, failed or expired) and a `reason` when there is one. None for the steps in between. |
 | `device.allocated.v1` (consumed) | | Registers the device. Receiving it twice changes nothing. |
 
 **Outbox.** An event is written to the `outbox` table in the same transaction as the change it describes, and a background relay publishes it afterwards. Publishing after the commit
@@ -218,6 +220,46 @@ because of that. Published rows are removed after 7 days. See [ADR 0006](docs/ad
 **Consuming.** `device.allocated.v1` is read from the queue `pulse.device-allocated`. A message that can never succeed (not JSON, not what the contract describes, a registration the registry refuses)
 is rejected without a retry and lands in the dead-letter queue `pulse.dead-letters`, where a person can read it, and the messages behind it carry on. A failure that may pass, such as the database
 being down, is tried again after a pause.
+
+### Commands
+
+Greenhaus decides, Pulse delivers. A service caller sends a command to a device, and Pulse queues it, hands it to the device link and tracks it to its end:
+
+```bash
+curl -s -X POST localhost:5080/api/pulse/v2/devices/$DEVICE/commands \
+  -H "Authorization: Bearer $SERVICE" -H "Content-Type: application/json" \
+  -d '{"commandId":"7b0e9c52-4c1d-4a5b-9d0e-3f1a2b3c4d5e","type":"run_actuator","actuatorId":"pump-1","durationSeconds":10,"expiresAt":"2026-10-26T12:30:00Z"}'
+```
+
+| | |
+| --- | --- |
+| `POST /devices/{id}/commands` | service. `202` with the command. Sending the same `commandId` and body again returns the stored command and changes nothing, so a sender can retry. The same id for another command is `409 command_id_reused`. |
+| `GET /devices/{id}/commands` | newest first, `limit` up to 200. An owner sees the commands of their own devices. |
+| `GET /devices/{id}/commands/{commandId}` | one command with its `status`, `reason` and `finishedAt`. |
+
+Types are `run_actuator` (needs `durationSeconds`), `stop_actuator` and `set_kill_switch` (needs `enabled`). A command is refused with `400` when the device has no such actuator (`validation_failed`), when a run is longer than the actuator's `maxRunSeconds` (`validation_failed`) or when `expiresAt` is not in the future (`command_expired`), and with `409 invalid_state` for a retired device.
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST
+    queued --> sent: handed to the device link
+    sent --> accepted: device took it
+    accepted --> completed
+    queued --> expired: not delivered in time
+    sent --> expired: not accepted in time
+    accepted --> failed: no result after it should have ended
+    sent --> rejected: device refused it
+    accepted --> rejected
+    sent --> failed
+    completed --> [*]
+    rejected --> [*]
+    failed --> [*]
+    expired --> [*]
+```
+
+The state only moves forward and an ending is final, so a repeated or late report from the device (the broker delivers at least once and not in order) changes nothing. When a command ends, `command.completed.v1` is published once. Retiring a device fails its open commands with `device_retired`.
+
+**There is no device link yet.** The MQTT bridge that carries commands to devices and the answers back is the next step, so until then commands are accepted and queued, and end `expired` if nothing delivers them. `ICommandSender` is the seam, and answers go in through `CommandStore.ApplyAckAsync`. See [ADR 0007](docs/adr/0007-command-queue.md).
 
 ### Running with authentication
 
@@ -292,6 +334,7 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 | `Auth:Enabled` | `false` | turns JWT authentication on. `Auth:Authority` is then required. |
 | `Auth:Authority` / `Issuer` / `Audience` | unset | the identity provider. `Issuer` is for when tokens carry a different address than the one used for discovery (Docker). An empty `Audience` skips the check. |
 | `Auth:ServiceRole` / `RequireHttpsMetadata` | `pulse-service` / `true` | the role that makes a caller a service. Keep the second one true outside local use. |
+| `Commands:PollInterval` / `AcceptedGrace` | `00:00:00.5` / `00:01:00` | how often queued commands are delivered and the ones out of time are ended, and how long past its run time a command the device accepted may stay without a result |
 | `Registry:Claim:PerDevicePerMinute` / `PerCallerPerMinute` | 5 / 30 | claim attempts allowed, counted in this instance |
 | `Simulator:Auth:TokenUrl` / `ClientId` / `ClientSecret` | unset | when set, the simulator authenticates with client credentials |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | when set, traces, metrics and logs are exported over OTLP |

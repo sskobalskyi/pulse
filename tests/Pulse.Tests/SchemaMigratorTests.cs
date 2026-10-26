@@ -70,7 +70,7 @@ public sealed class SchemaMigratorTests : IAsyncLifetime
 
         var ran = await Migrator(db).MigrateAsync();
 
-        Assert.Equal(["0001_initial", "0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox"], ran);
+        Assert.Equal(["0001_initial", "0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox", "0006_commands"], ran);
         Assert.Equal(ran, await Journal(db));
         Assert.True(await TableExists(db, "readings"));
         Assert.True(await TableExists(db, "devices"));
@@ -97,8 +97,8 @@ public sealed class SchemaMigratorTests : IAsyncLifetime
 
         var ran = await Migrator(db).MigrateAsync();
 
-        Assert.Equal(["0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox"], ran); // 0001 was recorded, not run again, which would have failed on the existing tables
-        Assert.Equal(["0001_initial", "0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox"], await Journal(db));
+        Assert.Equal(["0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox", "0006_commands"], ran); // 0001 was recorded, not run again, which would have failed on the existing tables
+        Assert.Equal(["0001_initial", "0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox", "0006_commands"], await Journal(db));
         await using var count = db.CreateCommand("SELECT count(*) FROM readings");
         Assert.Equal(1L, await count.ExecuteScalarAsync()); // the data survived
     }
@@ -193,7 +193,7 @@ public sealed class SchemaMigratorTests : IAsyncLifetime
 
         var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Migrator(db).MigrateAsync()));
 
-        Assert.Equal(["0001_initial", "0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox"], await Journal(db));
-        Assert.Equal(5, results.Sum(r => r.Count)); // five scripts ran in total, across all four instances
+        Assert.Equal(["0001_initial", "0002_device_registry", "0003_channels", "0004_device_rules", "0005_outbox", "0006_commands"], await Journal(db));
+        Assert.Equal(6, results.Sum(r => r.Count)); // six scripts ran in total, across all four instances
     }
 }
