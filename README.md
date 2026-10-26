@@ -283,7 +283,13 @@ docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up --build
 
 A message that is not what the contract describes is counted in `pulse.mqtt.messages` with its reason and dropped, so one faulty device cannot hurt the bridge. Once a device publishes a status its connection is what it says, and silence no longer makes it offline (a connected device whose sensor stopped is online and has a no-data alert). Instances share one subscription, so each message is handled once. See [ADR 0008](docs/adr/0008-mqtt-bridge.md).
 
-**Not set up yet: who may connect.** Pulse takes the device in the topic as the one talking, which the broker has to guarantee with a credential per device and topic permissions. The local broker accepts any client, so keep this off an untrusted network until that is done.
+**Who may connect.** Pulse takes the device in the topic as the one talking, so the broker has to guarantee it. With the extra override
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mqtt.yml -f docker-compose.mqtt-auth.yml up --build
+```
+
+EMQX asks Pulse (`POST /mqtt/auth` and `/mqtt/acl`, proved with a shared secret) for every connection and every topic. A device connects with its id as the user name and its plaintext credential as the password. Pulse checks it against the `pbkdf2_sha256$iterations$salt$hash` it stored from `device.allocated.v1`, refuses a retired device, and lets the device publish only under `greenhaus/v1/devices/{its id}/` (not `commands`, which is Pulse's) and subscribe only to its own `commands`; anything else is denied and the client is disconnected. The bridge has its own account (`Mqtt:UserName`/`Password`), which is let in as a superuser. Without this override the local broker accepts any client, so keep that off an untrusted network. A device already connected when it is retired stays connected until it reconnects.
 
 ### Running with authentication
 
@@ -358,7 +364,7 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 | `Auth:Enabled` | `false` | turns JWT authentication on. `Auth:Authority` is then required. |
 | `Auth:Authority` / `Issuer` / `Audience` | unset | the identity provider. `Issuer` is for when tokens carry a different address than the one used for discovery (Docker). An empty `Audience` skips the check. |
 | `Auth:ServiceRole` / `RequireHttpsMetadata` | `pulse-service` / `true` | the role that makes a caller a service. Keep the second one true outside local use. |
-| `Mqtt:Enabled` / `Host` / `Port` | `false` / `localhost` / `1883` | turns the device bridge on. `UserName` and `Password` are the bridge's own account, `ClientId` gives it a session the broker keeps, `SharedGroup` (default `pulse`) is what instances share a subscription under |
+| `Mqtt:Enabled` / `Host` / `Port` | `false` / `localhost` / `1883` | turns the device bridge on. `UserName` and `Password` are the bridge's own account, `ClientId` gives it a session the broker keeps, `SharedGroup` (default `pulse`) is what instances share a subscription under, `HttpAuthSecret` is what the broker proves itself with to `/mqtt/auth` and `/mqtt/acl` (empty leaves them off) |
 | `Commands:PollInterval` / `AcceptedGrace` | `00:00:00.5` / `00:01:00` | how often queued commands are delivered and the ones out of time are ended, and how long past its run time a command the device accepted may stay without a result |
 | `Registry:Claim:PerDevicePerMinute` / `PerCallerPerMinute` | 5 / 30 | claim attempts allowed, counted in this instance |
 | `Simulator:Auth:TokenUrl` / `ClientId` / `ClientSecret` | unset | when set, the simulator authenticates with client credentials |

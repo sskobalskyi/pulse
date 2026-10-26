@@ -45,13 +45,22 @@ with a seam for delivery. This is what plugs into it.
 - **The manifest is read for the firmware only.** What the device can do is what it was registered with, from the allocation. A
   device that declares something else is not believed.
 
+- **Pulse answers the broker's questions.** EMQX's HTTP authentication and authorization call `POST /mqtt/auth` and `/mqtt/acl`, which only the
+  broker may call (a shared secret). Pulse is the one that holds each device's `credentialHash`, so it verifies the password the device
+  presents (PBKDF2-HMAC-SHA256, the format the allocation writes, checked in constant time, a few at a time so a flood of attempts cannot
+  starve the API) and knows whether the device is retired. An unknown device costs the same as a wrong password. A device may publish
+  under its own id (but not on `commands`) and subscribe to its own `commands`, and nothing else, which is what keeps one device from
+  hearing or faking another. The bridge's account is a superuser, so the bridge is not asked topic by topic. The other way, the broker
+  reading Pulse's database, would have tied the broker to Pulse's schema.
+
 ## Consequences
 
-- **Pulse trusts the topic.** The device id in the topic is taken as who is talking. That is the broker's job to guarantee:
-  each device authenticates with its own credential and may only use its own topics, which the contract states. This change
-  does not set that up. The local broker accepts any client, and per-device credentials and topic permissions
-  (`credentialHash` from `device.allocated.v1` is stored for exactly this) are the next step, so until then the bridge must
-  not face an untrusted network.
+- **A device that is retired stays connected** until it next connects, when it is refused. Kicking it at once needs the broker's management API.
+- **Nothing throttles guessing** beyond the broker's own protection and the slowness of the hash. The credential is 32 random bytes, so
+  guessing it is not a realistic attack, but the endpoint would be the place to add a limit.
+
+- **Pulse trusts the topic, so the broker must not.** The device id in the topic is taken as who is talking. Keeping that true is the
+  broker's job, and the broker asks Pulse (see above). Without `docker-compose.mqtt-auth.yml` the local broker accepts any client.
 - **Actuator state is not stored.** A device publishes `state` (kill switch, actuators), and Pulse does not keep it yet: the
   answer to a command says what a sender needs. It will be stored when something reads it.
 - **Readings can be lost** when the database is away at the wrong moment. HTTP ingestion has a retry in the caller, MQTT

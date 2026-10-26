@@ -1,0 +1,45 @@
+# Makes the broker ask Pulse who may connect and what they may do. Layered on top of the MQTT override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.mqtt.yml -f docker-compose.mqtt-auth.yml up --build
+#
+# A device connects with its id as the user name and its plaintext credential as the password (the one whose hash was in
+# device.allocated.v1), and may then publish under greenhaus/v1/devices/{its id}/ and subscribe to its own commands, and nothing
+# else. EMQX calls POST /mqtt/auth and /mqtt/acl on the API for every connection and every topic, proving itself with the shared
+# secret below. Without this file the broker lets everyone in, which is only fine on a trusted machine.
+#
+# The secrets here are for local use and are not secret. Change them for anything else. In this file `$$` is how compose
+# writes a literal `$`, and $${username}, $${topic} and so on are placeholders EMQX fills in.
+
+services:
+  emqx:
+    environment:
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: http
+      EMQX_AUTHENTICATION__1__METHOD: post
+      EMQX_AUTHENTICATION__1__URL: http://api:8080/mqtt/auth
+      EMQX_AUTHENTICATION__1__HEADERS: '{"content-type" = "application/json", authorization = "Bearer pulse-broker-dev-secret"}'
+      EMQX_AUTHENTICATION__1__BODY: '{username = "$${username}", password = "$${password}"}'
+      EMQX_AUTHORIZATION__SOURCES__1__TYPE: http
+      EMQX_AUTHORIZATION__SOURCES__1__METHOD: post
+      EMQX_AUTHORIZATION__SOURCES__1__URL: http://api:8080/mqtt/acl
+      EMQX_AUTHORIZATION__SOURCES__1__HEADERS: '{"content-type" = "application/json", authorization = "Bearer pulse-broker-dev-secret"}'
+      EMQX_AUTHORIZATION__SOURCES__1__BODY: '{username = "$${username}", topic = "$${topic}", action = "$${action}"}'
+      # Nobody is let through by default: a client Pulse has no opinion on is refused.
+      EMQX_AUTHORIZATION__NO_MATCH: deny
+      EMQX_AUTHORIZATION__DENY_ACTION: disconnect
+    depends_on:
+      - api
+
+  api:
+    environment:
+      Mqtt__HttpAuthSecret: pulse-broker-dev-secret
+      # The bridge's own account on the broker. It is let in as a superuser, so it is not asked topic by topic.
+      Mqtt__UserName: pulse-bridge
+      Mqtt__Password: pulse-bridge-dev-password
+    # The broker has to reach the API to ask, and the API has to reach the broker to listen, so neither can wait for the
+    # other to be healthy: the bridge reconnects until the broker accepts it.
+    depends_on: !override
+      redpanda:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy

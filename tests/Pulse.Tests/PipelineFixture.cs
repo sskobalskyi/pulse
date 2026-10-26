@@ -34,7 +34,7 @@ public sealed class PipelineFixture : IAsyncLifetime
         "ConnectionStrings__Timescale", "Kafka__BootstrapServers", "Kafka__AutoOffsetReset",
         "Alerts__NoData__Timeout", "Alerts__NoData__CheckInterval", "Registry__Claim__PerCallerPerMinute",
         "Events__Enabled", "Events__PollInterval", "Events__RabbitMq__HostName", "Events__RabbitMq__Port", "Events__RabbitMq__UserName", "Events__RabbitMq__Password",
-        "Mqtt__Enabled", "Mqtt__Host", "Mqtt__Port",
+        "Mqtt__Enabled", "Mqtt__Host", "Mqtt__Port", "Mqtt__HttpAuthSecret",
     ];
 
     private readonly RedpandaContainer _redpanda = new RedpandaBuilder("docker.redpanda.com/redpandadata/redpanda:v24.3.7").Build();
@@ -64,6 +64,9 @@ public sealed class PipelineFixture : IAsyncLifetime
     public string MqttHost => _emqx.Hostname;
 
     public int MqttPort => _emqx.GetMappedPublicPort(1883);
+
+    /// <summary>What the broker sends to prove it is the broker when it asks Pulse who may connect.</summary>
+    public const string BrokerSecret = "broker-secret-for-tests";
 
     private const string BrokerUser = "rabbitmq";
     private const string BrokerPassword = "rabbitmq";
@@ -115,6 +118,7 @@ public sealed class PipelineFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("Mqtt__Enabled", "true");
         Environment.SetEnvironmentVariable("Mqtt__Host", _emqx.Hostname);
         Environment.SetEnvironmentVariable("Mqtt__Port", _emqx.GetMappedPublicPort(1883).ToString());
+        Environment.SetEnvironmentVariable("Mqtt__HttpAuthSecret", BrokerSecret);
 
         _factory = new WebApplicationFactory<Program>();
         Client = _factory.CreateClient(); // also starts the host, and with it the stream processors
