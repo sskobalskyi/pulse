@@ -248,6 +248,27 @@ public sealed class EventsPipelineTests(PipelineFixture stack)
     }
 
     [Fact]
+    public async Task A_device_that_disappears_is_published_offline_with_the_cause_last_will_and_online_again_when_it_is_back()
+    {
+        await using var listener = await Listener.StartAsync(stack.BrokerFactory, "device.status.v1");
+        var pot = await ClaimedPot();
+        await using var device = new FakeDevice(pot, stack);
+        await device.ConnectAsync(withWill: true);
+
+        await device.Online();
+        var online = await listener.Next(pot, "device.status.v1", m => m.Payload.GetProperty("status").GetString() == "online");
+        await device.LoseConnectionAsync();
+        var offline = await listener.Next(pot, "device.status.v1", m => m.Payload.GetProperty("status").GetString() == "offline");
+        await device.ConnectAsync(withWill: true);
+        await device.Online();
+        var back = await listener.Next(pot, "device.status.v1", m => m.Payload.GetProperty("status").GetString() == "online", skip: 1);
+
+        foreach (var message in new[] { online, offline, back }) AssertFitsContract(message);
+        Assert.Equal("last_will", offline.Payload.GetProperty("cause").GetString());
+        Assert.Equal("reconnect", back.Payload.GetProperty("cause").GetString());
+    }
+
+    [Fact]
     public async Task Retiring_a_device_is_published_once()
     {
         await using var listener = await Listener.StartAsync(stack.BrokerFactory, "device.retired.v1");

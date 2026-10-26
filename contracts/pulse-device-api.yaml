@@ -291,8 +291,18 @@ paths:
       operationId: sendCommand
       summary: Queue a command for a device
       description: |
+        Service callers only: a user asks Greenhaus, which knows what their tier allows.
+
         Idempotent on `commandId`. The command is persisted, handed to the MQTT bridge and published with
-        at-least-once delivery. A command that has expired is never executed by the device.
+        at-least-once delivery. A command that has expired is never executed by the device. Sending the same
+        command again (same device, type, actuator, duration, enabled and expiry) returns the stored command in its
+        current state and changes nothing; the same `commandId` for a different command is `409` with the code
+        `command_id_reused`.
+
+        `400` when the device has no such actuator, a run is longer than the actuator's `maxRunSeconds`, a required
+        field is missing (`validation_failed`), or `expiresAt` is not in the future (`command_expired`). `409` with
+        the code `invalid_state` for a retired device. A command for a device that is currently offline is still
+        queued: it is delivered when the device is back, or ends `expired`.
       requestBody:
         required: true
         content:
@@ -470,6 +480,7 @@ components:
             - bad_request
             - not_found
             - command_expired
+            - command_id_reused
             - device_offline
     Metric:
       type: string
@@ -624,7 +635,12 @@ components:
         type: { type: string }
         actuatorId: { type: string }
         status: { type: string, enum: [queued, sent, accepted, completed, rejected, failed, expired] }
-        reason: { type: string }
+        reason:
+          type: string
+          description: |
+            Why a command ended other than by completing. The device's own reason (`min_interval`, `daily_cap`,
+            `exceeds_hard_limit`, ...) for a rejection or failure it reports, or one of Pulse's: `expired` (it ran out of
+            time before it could run), `no_result` (the device accepted it and never reported) and `device_retired`.
         createdAt: { type: string, format: date-time }
         finishedAt: { type: [string, 'null'], format: date-time }
     Point:

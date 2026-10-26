@@ -103,7 +103,8 @@ public sealed class PulseDb(NpgsqlDataSource dataSource, EventOutbox? outbox = n
             FROM devices d
             JOIN device_last_seen s ON s.device_id = d.id
             LEFT JOIN device_rules r ON r.device_id = s.device_id AND r.channel_id = s.channel AND r.kind = 'no_data'
-            WHERE d.state IN ('claimed', 'active')
+            -- A device that reports its own connection over MQTT is not judged by its silence.
+            WHERE d.state IN ('claimed', 'active') AND d.connection_source = 'telemetry'
             GROUP BY d.id, d.reported_status
             """, conn, tx))
         {

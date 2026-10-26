@@ -27,7 +27,8 @@ public sealed class AsyncApiContract
         {
             ["$schema"] = "https://json-schema.org/draft/2020-12/schema",
             ["$id"] = BaseUri,
-            ["$defs"] = _document["components"]!["schemas"]!.DeepClone(),
+            // device-mqtt.yaml writes its payloads inline and has no shared schemas.
+            ["$defs"] = _document["components"]!["schemas"]?.DeepClone() ?? new JsonObject(),
         };
         JsonSchema.FromText(OpenApiContract.PointAtDefinitions(definitions, BaseUri).ToJsonString(), _buildOptions, new Uri(BaseUri));
     }

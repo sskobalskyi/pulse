@@ -51,6 +51,9 @@ public static class PulseTelemetry
     public static readonly Counter<long> CommandsFinished =
         Meter.CreateCounter<long>("pulse.commands.finished", "{command}", "Commands that ended, by how: completed, rejected, failed or expired.");
 
+    public static readonly Counter<long> MqttMessages =
+        Meter.CreateCounter<long>("pulse.mqtt.messages", "{message}", "Messages from devices, by kind and outcome (handled, or why it was dropped).");
+
     /// <summary>Events waiting in the outbox, set by the relay after each round. The thing to watch to know the broker is keeping up.</summary>
     public static long OutboxPending;
 

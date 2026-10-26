@@ -20,6 +20,7 @@ Real-time device telemetry platform. A simulator emits readings, an ingestion AP
 - **Alert rules per device:** each channel of a device can have a threshold rule (range and hysteresis margin) and a no-data timeout of its own, set over the API. A channel without one uses the platform's rules for its metric. See [Alert rules](#alert-rules).
 - **Integration events:** alerts, device status and retirements are published to RabbitMQ through a transactional outbox, and devices are registered from `device.allocated.v1`. Off by default. See [Integration events](#integration-events).
 - **Commands:** the platform sends commands to a device (run a pump, flip the kill switch) through a queue that survives restarts, is idempotent on `commandId`, expires what nobody could deliver and reports how each one ended. See [Commands](#commands).
+- **Devices over MQTT:** an optional bridge to the EMQX broker devices connect to: readings, status and last will in, commands out, answers back, all as the device contract says. See [Devices over MQTT](#devices-over-mqtt).
 - **Authentication:** Keycloak JWTs behind a switch. Service callers manage the registry, users see only the devices they own.
 - **Schema migrations:** plain SQL files applied by the API on startup, with an existing database adopted rather than rebuilt ([ADR 0002](docs/adr/0002-sql-migrations-on-startup.md)).
 - **Contract tests:** responses are validated against `contracts/pulse-device-api.yaml`, the OpenAPI document that the rest of the system is built against.
@@ -206,7 +207,7 @@ with its name as the routing key, a persistent message, and the headers the cont
 | Event | Published when | Notes |
 | --- | --- | --- |
 | `alert.raised.v1`, `alert.resolved.v1` | an alert changes state | One `alertId` for the raised and the resolved event of the same alert. `direction` (below or above) only on raised. A no-data alert has no `value`. |
-| `device.status.v1` | a device goes offline or comes back | Online while any channel reports within its no-data timeout, offline when all are quiet. Cause `no_data` or `reconnect`. `last_will` comes with the MQTT bridge. A device that never reports is not announced. |
+| `device.status.v1` | a device goes offline or comes back | Online while any channel reports within its no-data timeout, offline when all are quiet. Cause `no_data` or `reconnect` from telemetry, or `last_will` and `reconnect` from the device itself over MQTT. A device that never reports is not announced. |
 | `device.retired.v1` | a device is retired | Once, not again on a repeated retire. |
 | `command.completed.v1` | a command ends | Once per command, with its final `status` (completed, rejected, failed or expired) and a `reason` when there is one. None for the steps in between. |
 | `device.allocated.v1` (consumed) | | Registers the device. Receiving it twice changes nothing. |
@@ -259,7 +260,30 @@ stateDiagram-v2
 
 The state only moves forward and an ending is final, so a repeated or late report from the device (the broker delivers at least once and not in order) changes nothing. When a command ends, `command.completed.v1` is published once. Retiring a device fails its open commands with `device_retired`.
 
-**There is no device link yet.** The MQTT bridge that carries commands to devices and the answers back is the next step, so until then commands are accepted and queued, and end `expired` if nothing delivers them. `ICommandSender` is the seam, and answers go in through `CommandStore.ApplyAckAsync`. See [ADR 0007](docs/adr/0007-command-queue.md).
+**The device link is the MQTT bridge** ([Devices over MQTT](#devices-over-mqtt)). Without it nothing delivers commands, so they are accepted and queued, and end `expired`. `ICommandSender` is the seam, and answers go in through `CommandStore.ApplyAckAsync`. See [ADR 0007](docs/adr/0007-command-queue.md).
+
+### Devices over MQTT
+
+Devices talk to Pulse on MQTT, as [`contracts/device-mqtt.yaml`](contracts/device-mqtt.yaml) defines. It is off by default, so Pulse runs alone without a broker. To turn the bridge on with a local EMQX:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mqtt.yml up --build
+```
+
+(devices connect to `localhost:1884`, the EMQX dashboard is on http://localhost:18084). Everything a device says is under `greenhaus/v1/devices/{deviceId}/`:
+
+| Topic | Direction | What Pulse does |
+| --- | --- | --- |
+| `telemetry/{channelId}` | device → Pulse | Takes the reading through the same checks as `POST /api/telemetry` (plausible range, not retired, a channel the device declared, whose metric it takes), then Kafka. |
+| `status` | device → Pulse | `online`, or `offline` as the broker's last will. Decides whether the device is online, and publishes `device.status.v1` (cause `last_will`) when that changes. |
+| `commands` | Pulse → device | A command from the queue, QoS 1, with the time it has left as the message expiry, so a device that comes back late is not handed it. |
+| `commands/ack` | device → Pulse | `accepted` or an ending. Takes the command to its end. A repeat changes nothing. |
+| `manifest` | device → Pulse | Records the firmware. Capabilities are what the device was registered with. |
+| `state` | device → Pulse | Heard and counted, not stored yet. |
+
+A message that is not what the contract describes is counted in `pulse.mqtt.messages` with its reason and dropped, so one faulty device cannot hurt the bridge. Once a device publishes a status its connection is what it says, and silence no longer makes it offline (a connected device whose sensor stopped is online and has a no-data alert). Instances share one subscription, so each message is handled once. See [ADR 0008](docs/adr/0008-mqtt-bridge.md).
+
+**Not set up yet: who may connect.** Pulse takes the device in the topic as the one talking, which the broker has to guarantee with a credential per device and topic permissions. The local broker accepts any client, so keep this off an untrusted network until that is done.
 
 ### Running with authentication
 
@@ -334,6 +358,7 @@ The Aspire Dashboard is a viewer for local development. A full Grafana, Promethe
 | `Auth:Enabled` | `false` | turns JWT authentication on. `Auth:Authority` is then required. |
 | `Auth:Authority` / `Issuer` / `Audience` | unset | the identity provider. `Issuer` is for when tokens carry a different address than the one used for discovery (Docker). An empty `Audience` skips the check. |
 | `Auth:ServiceRole` / `RequireHttpsMetadata` | `pulse-service` / `true` | the role that makes a caller a service. Keep the second one true outside local use. |
+| `Mqtt:Enabled` / `Host` / `Port` | `false` / `localhost` / `1883` | turns the device bridge on. `UserName` and `Password` are the bridge's own account, `ClientId` gives it a session the broker keeps, `SharedGroup` (default `pulse`) is what instances share a subscription under |
 | `Commands:PollInterval` / `AcceptedGrace` | `00:00:00.5` / `00:01:00` | how often queued commands are delivered and the ones out of time are ended, and how long past its run time a command the device accepted may stay without a result |
 | `Registry:Claim:PerDevicePerMinute` / `PerCallerPerMinute` | 5 / 30 | claim attempts allowed, counted in this instance |
 | `Simulator:Auth:TokenUrl` / `ClientId` / `ClientSecret` | unset | when set, the simulator authenticates with client credentials |

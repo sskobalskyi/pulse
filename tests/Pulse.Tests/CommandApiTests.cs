@@ -60,7 +60,7 @@ public sealed class CommandApiTests(PipelineFixture stack)
     }
 
     [Fact]
-    public async Task A_command_is_accepted_and_waits_in_the_queue_when_nothing_can_deliver_it()
+    public async Task A_command_is_accepted_and_starts_out_queued()
     {
         var pot = await Pot();
         var id = Guid.NewGuid();
@@ -102,7 +102,9 @@ public sealed class CommandApiTests(PipelineFixture stack)
 
         Assert.Equal(HttpStatusCode.Conflict, other.StatusCode);
         Assert.Equal("command_id_reused", await Code(other));
-        Assert.Equal("queued", (await Get(pot, id)).GetProperty("status").GetString()); // the stored one is untouched
+        // The stored one is untouched: still the run of ten seconds that was queued, not a command of twelve.
+        Assert.Contains((await Get(pot, id)).GetProperty("status").GetString(), new[] { "queued", "sent" });
+        Assert.Single((await stack.Client.GetFromJsonAsync<JsonElement[]>($"{V2}/devices/{pot}/commands", Web))!);
     }
 
     [Fact]
@@ -169,14 +171,14 @@ public sealed class CommandApiTests(PipelineFixture stack)
     }
 
     [Fact]
-    public async Task A_command_nothing_delivers_expires_on_its_own()
+    public async Task A_command_nobody_answers_expires_on_its_own()
     {
         var pot = await Pot();
         var id = Guid.NewGuid();
         using var queued = await Send(pot, Run(id, validFor: TimeSpan.FromSeconds(2)));
 
         var command = await Get(pot, id);
-        for (var i = 0; i < 40 && command.GetProperty("status").GetString() == "queued"; i++)
+        for (var i = 0; i < 40 && command.GetProperty("status").GetString() is "queued" or "sent"; i++)
         {
             await Task.Delay(250);
             command = await Get(pot, id);

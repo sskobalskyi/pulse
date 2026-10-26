@@ -7,6 +7,8 @@ using Microsoft.Extensions.Hosting;
 using Pulse.Api.Storage;
 using Microsoft.AspNetCore.SignalR.Client;
 using Npgsql;
+using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
 using Testcontainers.PostgreSql;
 using RabbitMQ.Client;
 using Testcontainers.RabbitMq;
@@ -32,11 +34,18 @@ public sealed class PipelineFixture : IAsyncLifetime
         "ConnectionStrings__Timescale", "Kafka__BootstrapServers", "Kafka__AutoOffsetReset",
         "Alerts__NoData__Timeout", "Alerts__NoData__CheckInterval", "Registry__Claim__PerCallerPerMinute",
         "Events__Enabled", "Events__PollInterval", "Events__RabbitMq__HostName", "Events__RabbitMq__Port", "Events__RabbitMq__UserName", "Events__RabbitMq__Password",
+        "Mqtt__Enabled", "Mqtt__Host", "Mqtt__Port",
     ];
 
     private readonly RedpandaContainer _redpanda = new RedpandaBuilder("docker.redpanda.com/redpandadata/redpanda:v24.3.7").Build();
 
     private readonly RabbitMqContainer _rabbit = new RabbitMqBuilder("rabbitmq:4-management").Build();
+
+    // EMQX, the broker of the device contract. Anonymous by default, which is what the tests want: they stand in for devices.
+    private readonly IContainer _emqx = new ContainerBuilder("emqx/emqx:5.8.6")
+        .WithPortBinding(1883, true)
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("is running now"))
+        .Build();
 
     private readonly PostgreSqlContainer _timescale = new PostgreSqlBuilder("timescale/timescaledb:2.17.2-pg16")
         .WithDatabase("pulse")
@@ -50,6 +59,11 @@ public sealed class PipelineFixture : IAsyncLifetime
 
     /// <summary>For tests that need to reach the database directly, for example to refresh the aggregate instead of waiting for its job.</summary>
     public string DatabaseConnectionString => _timescale.GetConnectionString();
+
+    /// <summary>Where devices connect, for tests that act as one.</summary>
+    public string MqttHost => _emqx.Hostname;
+
+    public int MqttPort => _emqx.GetMappedPublicPort(1883);
 
     private const string BrokerUser = "rabbitmq";
     private const string BrokerPassword = "rabbitmq";
@@ -71,7 +85,7 @@ public sealed class PipelineFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        await Task.WhenAll(_redpanda.StartAsync(), _timescale.StartAsync(), _rabbit.StartAsync());
+        await Task.WhenAll(_redpanda.StartAsync(), _timescale.StartAsync(), _rabbit.StartAsync(), _emqx.StartAsync());
 
         // No schema is applied here: the API migrates the empty database itself on startup, as it does in compose.
         // Environment variables rather than ConfigureAppConfiguration: Program reads some settings while it is
@@ -97,6 +111,11 @@ public sealed class PipelineFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("Events__RabbitMq__UserName", BrokerUser);
         Environment.SetEnvironmentVariable("Events__RabbitMq__Password", BrokerPassword);
 
+        // The bridge to devices is on for the whole stack too, against a real broker.
+        Environment.SetEnvironmentVariable("Mqtt__Enabled", "true");
+        Environment.SetEnvironmentVariable("Mqtt__Host", _emqx.Hostname);
+        Environment.SetEnvironmentVariable("Mqtt__Port", _emqx.GetMappedPublicPort(1883).ToString());
+
         _factory = new WebApplicationFactory<Program>();
         Client = _factory.CreateClient(); // also starts the host, and with it the stream processors
     }
@@ -108,7 +127,7 @@ public sealed class PipelineFixture : IAsyncLifetime
 
         foreach (var key in EnvKeys) Environment.SetEnvironmentVariable(key, null);
 
-        await Task.WhenAll(_redpanda.DisposeAsync().AsTask(), _timescale.DisposeAsync().AsTask(), _rabbit.DisposeAsync().AsTask());
+        await Task.WhenAll(_redpanda.DisposeAsync().AsTask(), _timescale.DisposeAsync().AsTask(), _rabbit.DisposeAsync().AsTask(), _emqx.DisposeAsync().AsTask());
     }
 
     /// <summary>
