@@ -47,7 +47,8 @@ services:
     environment:
       Kafka__BootstrapServers: redpanda:9092
       ConnectionStrings__Timescale: Host=timescaledb;Port=5432;Database=pulse;Username=pulse;Password=pulse
-      Cors__Origins__0: http://localhost:8080
+      # The dashboard's address as the browser sees it, which follows PULSE_WEB_PORT when the dashboard is published elsewhere.
+      Cors__Origins__0: http://localhost:${PULSE_WEB_PORT:-8080}
     ports:
       - "5080:8080"
     depends_on:
@@ -70,7 +71,9 @@ services:
     build:
       context: web
     ports:
-      - "8080:80"
+      # 8080 unless PULSE_WEB_PORT says otherwise, for a machine where something else has 8080. With authentication on, the identity
+      # provider has to allow the new address as a redirect (the dashboard sends the one it is served from).
+      - "${PULSE_WEB_PORT:-8080}:80"
     depends_on:
       - api
 
